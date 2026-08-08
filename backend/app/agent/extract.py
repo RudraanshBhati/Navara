@@ -127,9 +127,7 @@ def build_chain(model: str | None = None):
         timeout=60,
         max_retries=2,
     )
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", SYSTEM_PROMPT), ("human", USER_PROMPT)]
-    )
+    prompt = ChatPromptTemplate.from_messages([("system", SYSTEM_PROMPT), ("human", USER_PROMPT)])
     return prompt | llm.with_structured_output(ExtractedIncident)
 
 

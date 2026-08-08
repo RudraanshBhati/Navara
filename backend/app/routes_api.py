@@ -124,9 +124,7 @@ class MockRoutesClient:
             [(0.0, "Direct"), (0.35, "Northern detour"), (-0.35, "Southern detour")]
         ):
             points = _bowed_path(origin, destination, bow, steps=60)
-            distance = sum(
-                _haversine(a, b) for a, b in zip(points, points[1:], strict=False)
-            )
+            distance = sum(_haversine(a, b) for a, b in zip(points, points[1:], strict=False))
             out.append(
                 RouteCandidate(
                     points=points,

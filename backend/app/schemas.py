@@ -107,9 +107,7 @@ class RouteOut(BaseModel):
         description="Per-layer weighted contribution averaged over the route"
     )
     worst_stretch: WorstStretch | None = None
-    coverage: float = Field(
-        description="Fraction of the route inside cells we have real data for"
-    )
+    coverage: float = Field(description="Fraction of the route inside cells we have real data for")
     summary: str
     reasons: list[str] = Field(description="Why-panel bullets, strongest first")
     news: list[NewsItem] = Field(default_factory=list)
@@ -121,9 +119,7 @@ class RouteResponse(BaseModel):
         description="One sentence on why the top route was picked over the next best"
     )
     departure_time: datetime
-    provider: str = Field(
-        description="'google' for real routes, 'mock' for the offline stand-in"
-    )
+    provider: str = Field(description="'google' for real routes, 'mock' for the offline stand-in")
     weights: dict[str, float]
     warnings: list[str] = Field(
         default_factory=list,

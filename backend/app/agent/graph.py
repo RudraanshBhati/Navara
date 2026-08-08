@@ -146,11 +146,7 @@ def node_extract(state: NewsAgentState) -> dict:
             "stats": {"extracted": 0},
         }
 
-    incidents_only = [
-        (a, e)
-        for a, e in paired
-        if e.is_safety_incident and e.location_text.strip()
-    ]
+    incidents_only = [(a, e) for a, e in paired if e.is_safety_incident and e.location_text.strip()]
     log.info("%d of %d extractions are located incidents", len(incidents_only), len(paired))
     return {
         "extracted": incidents_only,
@@ -233,7 +229,10 @@ def node_merge(state: NewsAgentState) -> dict:
     live.sort(key=lambda i: i.occurred_dt, reverse=True)
     log.info(
         "merged: %d existing + %d new -> %d live (%d expired out)",
-        len(existing), added, len(live), expired,
+        len(existing),
+        added,
+        len(live),
+        expired,
     )
     return {
         "incidents": live,
@@ -318,8 +317,27 @@ def run_agent(
 # ---------------------------------------------------------------------------
 
 _STOPWORDS = {
-    "a", "an", "the", "in", "on", "at", "of", "for", "to", "and", "with",
-    "after", "over", "from", "by", "as", "is", "was", "says", "said", "delhi",
+    "a",
+    "an",
+    "the",
+    "in",
+    "on",
+    "at",
+    "of",
+    "for",
+    "to",
+    "and",
+    "with",
+    "after",
+    "over",
+    "from",
+    "by",
+    "as",
+    "is",
+    "was",
+    "says",
+    "said",
+    "delhi",
 }
 
 

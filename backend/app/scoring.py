@@ -86,9 +86,7 @@ class ScoredRoute:
 # ---------------------------------------------------------------------------
 
 
-def resample(
-    points: list[tuple[float, float]], spacing_m: float
-) -> list[tuple[float, float]]:
+def resample(points: list[tuple[float, float]], spacing_m: float) -> list[tuple[float, float]]:
     """Re-cut a polyline into points at roughly even spacing.
 
     Google's polylines are vertex-dense at corners and sparse on straights, so
@@ -191,8 +189,12 @@ def score_polyline(
 
     if not segments:
         return ScoredRoute(
-            segments=[], css=0.0, band=band_for(0.0), distance_m=distance_m,
-            duration_s=duration_s, polyline=polyline,
+            segments=[],
+            css=0.0,
+            band=band_for(0.0),
+            distance_m=distance_m,
+            duration_s=duration_s,
+            polyline=polyline,
         )
 
     total_len = sum(s.length_m for s in segments) or 1.0

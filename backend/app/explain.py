@@ -48,9 +48,7 @@ def segment_flag(segment: ScoredSegment, registry: LayerRegistry | None = None) 
     return LAYER_FLAGS[max(grounded, key=lambda k: grounded[k])]
 
 
-def annotate_segments(
-    route: ScoredRoute, registry: LayerRegistry | None = None
-) -> list[dict]:
+def annotate_segments(route: ScoredRoute, registry: LayerRegistry | None = None) -> list[dict]:
     """Segment payload for the map overlay."""
     registry = registry or get_layers()
     return [

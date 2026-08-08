@@ -23,8 +23,13 @@ def _segment(css: float, worst_layer: str = "ntls") -> ScoredSegment:
 
 def _route(css: float, distance: float, worst: dict | None = None) -> ScoredRoute:
     return ScoredRoute(
-        segments=[], css=css, band=band_for(css), distance_m=distance,
-        duration_s=distance / 1.35, polyline="", worst_stretch=worst,
+        segments=[],
+        css=css,
+        band=band_for(css),
+        distance_m=distance,
+        duration_s=distance / 1.35,
+        polyline="",
+        worst_stretch=worst,
     )
 
 

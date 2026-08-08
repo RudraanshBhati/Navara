@@ -95,9 +95,7 @@ class NSILayer(Layer):
             self._build_index()
         return self
 
-    def save_incidents(
-        self, incidents: list[Incident], meta: dict | None = None
-    ) -> None:
+    def save_incidents(self, incidents: list[Incident], meta: dict | None = None) -> None:
         PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
             "layer": self.name,

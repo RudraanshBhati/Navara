@@ -47,9 +47,7 @@ class TRCLayer(Layer):
         if HOURLY_PATH.exists():
             raw = json.loads(HOURLY_PATH.read_text(encoding="utf-8"))
             self._global_curve = [float(x) for x in raw["global"]]
-            self._cell_curves = {
-                k: [float(x) for x in v] for k, v in raw.get("cells", {}).items()
-            }
+            self._cell_curves = {k: [float(x) for x in v] for k, v in raw.get("cells", {}).items()}
             self._meta = raw.get("meta", {})
             self._loaded = True
         return self

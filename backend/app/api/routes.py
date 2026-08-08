@@ -59,8 +59,10 @@ def health() -> HealthResponse:
             "cells": grid.n_cells,
             "cell_size_m": grid.spec.cell_size_m,
             "bbox": [
-                grid.spec.min_lon, grid.spec.min_lat,
-                grid.spec.max_lon, grid.spec.max_lat,
+                grid.spec.min_lon,
+                grid.spec.min_lat,
+                grid.spec.max_lon,
+                grid.spec.max_lat,
             ],
         },
         layers=layers.status(),  # type: ignore[arg-type]

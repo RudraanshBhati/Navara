@@ -49,11 +49,35 @@ DELHI_RSS_FEEDS: list[tuple[str, str]] = [
 #: judging. Keep it generous: a false positive costs one API call, a false
 #: negative loses an incident entirely.
 SAFETY_TERMS = [
-    "assault", "molest", "harass", "stalk", "rape", "abduct", "kidnap",
-    "snatch", "robbery", "rob ", "chain snatching", "mugg", "stab", "murder",
-    "attack", "eve teasing", "groping", "crime", "arrested", "accused",
-    "police", "fir ", "victim", "woman", "girl", "unsafe", "dark stretch",
-    "street light", "streetlight",
+    "assault",
+    "molest",
+    "harass",
+    "stalk",
+    "rape",
+    "abduct",
+    "kidnap",
+    "snatch",
+    "robbery",
+    "rob ",
+    "chain snatching",
+    "mugg",
+    "stab",
+    "murder",
+    "attack",
+    "eve teasing",
+    "groping",
+    "crime",
+    "arrested",
+    "accused",
+    "police",
+    "fir ",
+    "victim",
+    "woman",
+    "girl",
+    "unsafe",
+    "dark stretch",
+    "street light",
+    "streetlight",
 ]
 
 
@@ -93,7 +117,7 @@ class GDELTSource(NewsSource):
             # GDELT's query language: quoted phrase + a location filter. The
             # sourcecountry filter keeps out the steady trickle of "Delhi" in
             # foreign wire copy about national politics.
-            "query": '(Delhi) (crime OR assault OR robbery OR snatching OR harassment) sourcecountry:india',
+            "query": "(Delhi) (crime OR assault OR robbery OR snatching OR harassment) sourcecountry:india",
             "mode": "ArtList",
             "maxrecords": "150",
             "format": "json",
@@ -179,9 +203,7 @@ class NewsAPISource(NewsSource):
             "pageSize": "100",
         }
         try:
-            r = httpx.get(
-                NEWSAPI_URL, params=params, headers={"X-Api-Key": key}, timeout=30.0
-            )
+            r = httpx.get(NEWSAPI_URL, params=params, headers={"X-Api-Key": key}, timeout=30.0)
             r.raise_for_status()
             payload = r.json()
         except Exception as exc:  # noqa: BLE001

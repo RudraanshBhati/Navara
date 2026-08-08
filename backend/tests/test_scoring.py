@@ -193,8 +193,12 @@ def _route(css: float, distance: float) -> ScoredRoute:
     from app.config import band_for
 
     return ScoredRoute(
-        segments=[], css=css, band=band_for(css), distance_m=distance,
-        duration_s=distance / 1.35, polyline="",
+        segments=[],
+        css=css,
+        band=band_for(css),
+        distance_m=distance,
+        duration_s=distance / 1.35,
+        polyline="",
     )
 
 

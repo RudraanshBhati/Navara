@@ -110,9 +110,7 @@ class Grid:
         return min_lon, min_lat, min_lon + self.deg_lon, min_lat + self.deg_lat
 
     def all_cell_ids(self) -> list[str]:
-        return [
-            self.encode(r, c) for r in range(self.n_rows) for c in range(self.n_cols)
-        ]
+        return [self.encode(r, c) for r in range(self.n_rows) for c in range(self.n_cols)]
 
     @property
     def n_cells(self) -> int:

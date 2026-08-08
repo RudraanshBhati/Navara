@@ -1,6 +1,6 @@
 """FastAPI entrypoint.
 
-    uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 """
 
 from __future__ import annotations
@@ -36,7 +36,9 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     for name, status in layers.status().items():
         log.info(
             "layer %-5s available=%-5s cells=%d",
-            name, status["available"], status["cells_covered"],
+            name,
+            status["available"],
+            status["cells_covered"],
         )
     if not settings.google_maps_api_key:
         log.warning("GOOGLE_MAPS_API_KEY not set — /routes will serve mock geometry")
