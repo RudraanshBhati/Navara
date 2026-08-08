@@ -1,0 +1,12 @@
+# Normalise line endings so Windows/macOS/Linux collaborators don't fight over diffs.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.geojson text
+*.csv text
+*.tif binary
+*.parquet binary
+
+# Keep generated lockfiles out of PR diffs in the review UI.
+package-lock.json linguist-generated=true -diff

@@ -1,0 +1,53 @@
+# --- Secrets: never commit these ---
+.env
+.env.local
+.env.*.local
+*.pem
+service-account*.json
+gee-credentials*.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Data ---
+# Raw downloads are large and reproducible from scripts/ — keep them out of git.
+backend/data/raw/*
+!backend/data/raw/.gitkeep
+!backend/data/raw/README.md
+# Processed grid artefacts are build outputs.
+backend/data/processed/*
+!backend/data/processed/.gitkeep
+*.tif
+*.tiff
+*.h5
+*.nc
+*.parquet
+*.sqlite
+*.db
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
