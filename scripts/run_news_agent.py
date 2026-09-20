@@ -12,6 +12,16 @@ checking the graph wiring without spending anything.
 Run this on a schedule once the pipeline is real. Every few hours is plenty:
 the halflife is a week, so the layer does not change fast, and each run costs
 one LLM call per article that clears the prefilter.
+
+Two things are written, with different retention:
+
+  nsi_incidents.json   the live 30-day window the NSI layer scores from
+  nsi_archive.jsonl    every incident ever seen, permanently
+
+The second is the slow game. Delhi has no public incident-level crime dataset
+with coordinates and timestamps, so the archive accumulates one into being —
+which is why a missed month is a real cost and this belongs on a schedule
+sooner rather than later. See scripts/export_archive.py.
 """
 
 from __future__ import annotations
@@ -25,6 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
+from app.agent.archive import ARCHIVE_PATH, archive_stats  # noqa: E402
 from app.agent.graph import run_agent  # noqa: E402
 from app.agent.sources import Article, NewsSource  # noqa: E402
 
@@ -103,6 +114,19 @@ def main() -> int:
             )
     else:
         print("\nNo live incidents. Either nothing was found, or extraction was skipped.")
+
+    # The live count above is a 30-day window and stays roughly flat once the
+    # agent has been running a month. The archive is the number that should
+    # climb every day, and the one the CIP plan depends on.
+    if not args.dry_run:
+        acc = archive_stats()
+        if acc["incidents"]:
+            print(
+                f"\narchive: {acc['incidents']:,} incidents all-time across "
+                f"{acc['cells']:,} cells, spanning {acc['days_covered']} days"
+            )
+            print(f"         {ARCHIVE_PATH}")
+            print("         python scripts/export_archive.py --stats")
 
     # A run that fetched nothing at all almost always means a source broke, not
     # that Delhi had a quiet day. Fail loudly so a cron job surfaces it.

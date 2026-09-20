@@ -36,6 +36,13 @@ backend/data/raw/*
 # Processed grid artefacts are build outputs.
 backend/data/processed/*
 !backend/data/processed/.gitkeep
+# The news archive is NOT a build output — it accumulates one day at a time and
+# cannot be regenerated once lost, because the source articles rotate off the
+# feeds. Kept out of git because it grows without bound and carries article
+# URLs, but it is the one thing here that needs a real backup.
+backend/data/archive/*
+!backend/data/archive/.gitkeep
+!backend/data/archive/README.md
 *.tif
 *.tiff
 *.h5

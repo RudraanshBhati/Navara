@@ -17,6 +17,11 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BACKEND_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
+#: The one directory here that is NOT reproducible. `raw/` can be re-downloaded
+#: and `processed/` can be rebuilt from it, but the news archive accumulates one
+#: day at a time and a deleted day is gone — the source articles have rotated
+#: off the feeds by then. Back it up; see backend/data/README.md.
+ARCHIVE_DIR = DATA_DIR / "archive"
 
 
 class Settings(BaseSettings):

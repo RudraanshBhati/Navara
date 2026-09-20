@@ -103,5 +103,21 @@ def processed_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def archive_path(tmp_path, monkeypatch):
+    """Redirect the news archive at a temp file.
+
+    Both module globals have to move: `archive.ARCHIVE_PATH` is what the
+    functions default to, and a test that only patched one would quietly write
+    into the developer's real archive — the one file in this project that
+    cannot be regenerated.
+    """
+    import app.agent.archive as archive_mod
+
+    path = tmp_path / "nsi_archive.jsonl"
+    monkeypatch.setattr(archive_mod, "ARCHIVE_PATH", path)
+    return path
+
+
 def write_layer(path, name: str, cells: dict[str, float]) -> None:
     path.write_text(json.dumps({"layer": name, "meta": {}, "cells": cells}), encoding="utf-8")

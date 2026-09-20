@@ -31,6 +31,7 @@ from langgraph.graph import END, START, StateGraph
 from ..config import get_settings
 from ..data.base import severity_of
 from ..data.nsi import Incident, NSILayer
+from .archive import append_incidents
 from .extract import ExtractedIncident, extract_batch
 from .geocode import Geocoder
 from .sources import Article, NewsSource, default_sources
@@ -57,6 +58,9 @@ class NewsAgentState(TypedDict, total=False):
     articles: list[Article]
     extracted: list[tuple[Article, ExtractedIncident]]
     incidents: list[Incident]
+    #: Everything worth keeping permanently — a superset of `incidents`, which
+    #: only ever holds the live window. See node_merge.
+    archivable: list[Incident]
 
     stats: Annotated[dict, _merge_stats]
     errors: list[str]
@@ -206,12 +210,25 @@ def node_geocode(state: NewsAgentState) -> dict:
 
 
 def node_merge(state: NewsAgentState) -> dict:
-    """Union this run's incidents with the stored set, and drop expired ones.
+    """Union this run's incidents with the stored set, and split live from archival.
 
     Each run is a partial view — sources only look back a couple of days — so
     replacing the store rather than merging would make the map forget last
     week entirely. Dedupe is by incident id, which is derived from the article
     URL, so re-fetching the same story is idempotent.
+
+    Two outputs, because the layer and the archive want different things:
+
+      incidents   the live window. Expired ones are dropped, because NSI is
+                  about what happened *recently* and a decayed incident is
+                  noise in a score meant to react.
+      archivable  everything, expired included. The archive is the historical
+                  crime record this project cannot obtain any other way, and
+                  age is the point rather than a disqualification.
+
+    `archivable` deliberately keeps incidents that arrived already older than
+    the window — a story published today about something last month is useless
+    to NSI and valuable to CIP. Dropping those was silent data loss.
     """
     settings = get_settings()
     fresh = state.get("incidents", [])
@@ -228,7 +245,7 @@ def node_merge(state: NewsAgentState) -> dict:
 
     live.sort(key=lambda i: i.occurred_dt, reverse=True)
     log.info(
-        "merged: %d existing + %d new -> %d live (%d expired out)",
+        "merged: %d existing + %d new -> %d live (%d aged out of the window)",
         len(existing),
         added,
         len(live),
@@ -236,11 +253,18 @@ def node_merge(state: NewsAgentState) -> dict:
     )
     return {
         "incidents": live,
+        "archivable": list(by_id.values()),
         "stats": {"new_incidents": added, "expired": expired, "total_live": len(live)},
     }
 
 
 def node_persist(state: NewsAgentState) -> dict:
+    """Write the live window, then append to the permanent archive.
+
+    Archive first would be the safer order if the two could disagree, but they
+    cannot: appending is idempotent, so a crash between the two writes costs
+    nothing that the next run does not redo.
+    """
     if state.get("dry_run"):
         log.info("dry run — not writing %d incidents", len(state.get("incidents", [])))
         return {"stats": {"persisted": 0, "dry_run": True}}
@@ -256,7 +280,20 @@ def node_persist(state: NewsAgentState) -> dict:
         },
     )
     log.info("persisted %d incidents to %s", len(incidents), layer.path)
-    return {"stats": {"persisted": len(incidents)}}
+
+    # Failing to archive must not fail the run: the live layer is already
+    # written and serving, and the next run re-appends anything missed.
+    archive_stats: dict = {}
+    try:
+        archive_stats = append_incidents(state.get("archivable", incidents))
+    except OSError as exc:
+        log.error("archive append failed: %s", exc)
+        return {
+            "errors": state.get("errors", []) + [f"archive: {exc}"],
+            "stats": {"persisted": len(incidents)},
+        }
+
+    return {"stats": {"persisted": len(incidents), **archive_stats}}
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +343,7 @@ def run_agent(
         "articles": [],
         "extracted": [],
         "incidents": [],
+        "archivable": [],
         "stats": {},
         "errors": [],
     }
