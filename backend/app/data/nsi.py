@@ -69,6 +69,12 @@ class Incident:
     #: Free-text note from the extraction step, for auditing bad calls.
     note: str = ""
     tags: list[str] = field(default_factory=list)
+    #: The text the extractor actually read, truncated. Not used in scoring —
+    #: it exists so the archive can be re-extracted later with a better model
+    #: without re-fetching URLs that will have rotated off the feeds by then.
+    #: Without it, months of accumulation are locked behind whatever extractor
+    #: happened to be wired up at the time.
+    source_text: str = ""
 
     @property
     def occurred_dt(self) -> datetime:

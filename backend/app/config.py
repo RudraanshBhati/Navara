@@ -60,6 +60,25 @@ class Settings(BaseSettings):
     #: news locations are named places ("near Saket Metro"), not GPS fixes.
     news_blur_radius_m: float = 750.0
 
+    # --- Article body fetching ---
+    #: Fetch the article itself rather than extracting from the headline. Off
+    #: means the model sees a median of ~115 characters and cannot find a street
+    #: name that was never in front of it. See agent/fetch.py.
+    fetch_article_bodies: bool = True
+    #: Seconds between requests to news sites. These are other people's servers.
+    article_fetch_delay_s: float = 1.0
+    article_fetch_timeout_s: float = 20.0
+    #: Sent to the extractor. Enough for the lede and the paragraph naming the
+    #: place; well short of a long feature's worth of unrelated place names.
+    article_max_chars: int = 6000
+    #: Below this a "body" is a consent wall or a subscribe stub, not an article.
+    article_min_chars: int = 200
+
+    #: GDELT asks for one request every 5 seconds and enforces it with a
+    #: plain-text body that is not always accompanied by an error status.
+    gdelt_min_interval_s: float = 5.0
+    gdelt_max_retries: int = 3
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

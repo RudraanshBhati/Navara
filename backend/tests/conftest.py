@@ -29,6 +29,22 @@ def _clean_globals():
     reset_layers()
 
 
+@pytest.fixture(autouse=True)
+def _no_article_fetching(monkeypatch):
+    """Never let a test reach out to a newsroom's server.
+
+    `node_enrich` fetches article bodies for anything clearing the prefilter,
+    so a test that happens to build a relevant-looking article would silently
+    start making real HTTP requests — slow, flaky, and rude. Tests that want
+    the fetch path exercise it against fakes and opt in explicitly.
+    """
+    import app.config as config
+
+    settings = config.get_settings()
+    monkeypatch.setattr(settings, "fetch_article_bodies", False, raising=False)
+    yield
+
+
 @pytest.fixture
 def grid() -> Grid:
     return Grid()

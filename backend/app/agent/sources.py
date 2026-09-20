@@ -19,6 +19,7 @@ care where a story came from.
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -90,10 +91,25 @@ class Article:
     source: str
     published_at: datetime
     summary: str = ""
+    #: The article itself, filled in after the prefilter by agent/fetch.py.
+    #: Empty when the page could not be read — paywall, consent wall, bot block.
+    body: str = ""
 
     @property
     def text(self) -> str:
-        return f"{self.title}\n\n{self.summary}".strip()
+        """Everything known about this article, for the prefilter and the model.
+
+        The body is included once fetched, which is the difference between the
+        extractor reading a street name and guessing one. It is deliberately
+        last: title and summary are the most reliable parts, so they survive
+        any truncation downstream.
+        """
+        parts = [self.title, self.summary, self.body]
+        return "\n\n".join(p for p in parts if p and p.strip()).strip()
+
+    @property
+    def has_body(self) -> bool:
+        return bool(self.body and self.body.strip())
 
     def looks_relevant(self) -> bool:
         blob = self.text.lower()
@@ -110,7 +126,21 @@ class NewsSource(ABC):
 
 
 class GDELTSource(NewsSource):
+    """GDELT's DOC API.
+
+    It enforces roughly one request every 5 seconds, and it says so in a
+    **plain-text body that does not always carry an error status** — a 200 whose
+    content is "Please limit requests to one every 5 seconds". `raise_for_status`
+    sails past that and `.json()` then fails with a decode error that reads like
+    malformed data rather than a rate limit. This source was returning zero
+    articles for that reason while looking like a quiet news day, which is the
+    exact confusion docs/DATA_SOURCES.md warns about.
+    """
+
     name = "gdelt"
+
+    #: Shared across instances: the limit is per client, not per object.
+    _last_request_at: float = 0.0
 
     def fetch(self, lookback_hours: int) -> list[Article]:
         params = {
@@ -124,12 +154,8 @@ class GDELTSource(NewsSource):
             "timespan": f"{max(1, lookback_hours)}h",
             "sort": "datedesc",
         }
-        try:
-            r = httpx.get(GDELT_URL, params=params, timeout=30.0)
-            r.raise_for_status()
-            payload = r.json()
-        except Exception as exc:  # noqa: BLE001 - source must degrade gracefully
-            log.warning("GDELT fetch failed: %s", exc)
+        payload = self._get_with_backoff(params)
+        if payload is None:
             return []
 
         out: list[Article] = []
@@ -147,6 +173,60 @@ class GDELTSource(NewsSource):
             )
         log.info("GDELT returned %d articles", len(out))
         return out
+
+    def _get_with_backoff(self, params: dict) -> dict | None:
+        settings = get_settings()
+        interval = settings.gdelt_min_interval_s
+
+        for attempt in range(settings.gdelt_max_retries):
+            self._wait_for_slot(interval)
+            try:
+                r = httpx.get(
+                    GDELT_URL,
+                    params=params,
+                    timeout=30.0,
+                    headers={"User-Agent": "NAVARA/0.1 (safe-route research)"},
+                )
+            except httpx.HTTPError as exc:
+                log.warning("GDELT request failed: %s", exc)
+                return None
+
+            limited = r.status_code == 429 or _is_rate_limit_body(r.text)
+            if limited:
+                # Back off further each time rather than hammering a service
+                # that has just asked us not to.
+                wait = interval * (attempt + 2)
+                log.info(
+                    "GDELT rate-limited (attempt %d/%d), waiting %.0fs",
+                    attempt + 1,
+                    settings.gdelt_max_retries,
+                    wait,
+                )
+                time.sleep(wait)
+                continue
+
+            if r.status_code >= 400:
+                log.warning("GDELT returned HTTP %d", r.status_code)
+                return None
+
+            try:
+                return r.json()
+            except ValueError:
+                log.warning("GDELT returned non-JSON: %s", r.text[:160])
+                return None
+
+        log.warning(
+            "GDELT still rate-limited after %d attempts — no articles from it this run",
+            settings.gdelt_max_retries,
+        )
+        return None
+
+    @classmethod
+    def _wait_for_slot(cls, interval: float) -> None:
+        elapsed = time.monotonic() - cls._last_request_at
+        if cls._last_request_at and elapsed < interval:
+            time.sleep(interval - elapsed)
+        cls._last_request_at = time.monotonic()
 
 
 class RSSSource(NewsSource):
@@ -239,6 +319,16 @@ def default_sources() -> list[NewsSource]:
 # ---------------------------------------------------------------------------
 # Date parsing. Every feed does it differently and half of them do it wrong.
 # ---------------------------------------------------------------------------
+
+
+#: GDELT's rate-limit notice, which arrives as a plain-text body rather than a
+#: structured error and sometimes under a 200.
+_RATE_LIMIT_MARKERS = ("limit requests", "too many requests", "rate limit")
+
+
+def _is_rate_limit_body(text: str) -> bool:
+    head = (text or "")[:400].lower()
+    return any(marker in head for marker in _RATE_LIMIT_MARKERS)
 
 
 def _parse_gdelt_date(value: str) -> datetime | None:

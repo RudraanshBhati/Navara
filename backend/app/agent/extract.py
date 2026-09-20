@@ -33,6 +33,54 @@ log = logging.getLogger(__name__)
 
 CATEGORIES = list(SEVERITY_WEIGHTS.keys())
 
+#: Place names too coarse to put on a 500 m grid. The prompt asks the model to
+#: avoid these; this enforces it, because a prompt is a request and this is the
+#: field that decides which streets get a warning on them.
+#:
+#: Geocoding "South Delhi" succeeds — it returns a district centroid with a
+#: confident-looking result — and the incident then lands on whichever cells
+#: happen to surround that point, which is not where anything happened. A miss
+#: is visible and costs one data point; this is invisible and wrong.
+COARSE_LOCATIONS = {
+    "delhi",
+    "new delhi",
+    "ncr",
+    "delhi ncr",
+    "national capital region",
+    "north delhi",
+    "south delhi",
+    "east delhi",
+    "west delhi",
+    "central delhi",
+    "outer delhi",
+    "north east delhi",
+    "north west delhi",
+    "south east delhi",
+    "south west delhi",
+    "north-east delhi",
+    "north-west delhi",
+    "south-east delhi",
+    "south-west delhi",
+    "shahdara",
+    "delhi police",
+    "india",
+}
+
+
+def is_too_coarse(location_text: str) -> bool:
+    """True when a location names an area rather than a place."""
+    cleaned = " ".join((location_text or "").lower().split())
+    cleaned = cleaned.strip(" ,.")
+    if not cleaned:
+        return True
+    if cleaned in COARSE_LOCATIONS:
+        return True
+    # "South Delhi, Delhi" and "New Delhi, India" are the same non-answer with a
+    # suffix attached. Strip trailing region qualifiers and re-check.
+    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    meaningful = [p for p in parts if p not in COARSE_LOCATIONS]
+    return not meaningful
+
 
 class ExtractedIncident(BaseModel):
     """Schema the model must fill in for each article."""
@@ -56,7 +104,8 @@ class ExtractedIncident(BaseModel):
             "The most specific place named in the article, as a geocodable "
             "string, e.g. 'Saket Metro Station, New Delhi' or 'Karol Bagh "
             "market, Delhi'. Empty string if the article names nothing more "
-            "specific than 'Delhi'."
+            "specific than a district — 'Delhi', 'South Delhi', 'NCR' and the "
+            "like are all too coarse to place on a 500 m grid."
         ),
     )
     occurred_at: str = Field(
@@ -96,19 +145,36 @@ matters more than recall:
 
 - If the article does not name a place you could point to on a map, leave \
 location_text empty. Do not infer a location from the newspaper's city desk.
+- A location must be specific enough to mean one place. A named street, \
+market, metro station, colony or block is specific enough. A district or a \
+whole zone — "South Delhi", "West Delhi", "Outer Delhi", "NCR" — is not: \
+spreading a penalty across a district is the same as no penalty, but it looks \
+like information. Leave location_text empty rather than naming one.
 - If you are not sure the event is recent, lower your confidence rather than \
 guessing a date.
 - Articles about crime statistics, policy, arrests in old cases, or court \
-hearings are NOT incidents. Only report something that happened at a place.
+hearings are NOT incidents. Only report something that happened at a place. \
+Neither are road accidents, unless a pedestrian was targeted rather than \
+involved in a collision.
+
+WHEN YOU ONLY HAVE A HEADLINE
+The prompt tells you whether an article body was available. When it was not, \
+you are reading a headline that was written to be short, and it will usually \
+name no specific place at all. That is expected. Report what the headline \
+actually supports and leave location_text empty — do not reach for the most \
+plausible Delhi neighbourhood. An empty location drops the incident, which \
+costs us one data point; an invented one puts a warning on a street where \
+nothing happened.
 
 Answer only with the structured fields."""
 
 USER_PROMPT = """Article source: {source}
 Published: {published}
+Body available: {has_body}
 
 Title: {title}
 
-Summary: {summary}"""
+{content}"""
 
 
 def build_chain(model: str | None = None):
@@ -149,12 +215,19 @@ def extract_batch(
         return []
 
     chain = build_chain(model)
+    settings = get_settings()
     inputs = [
         {
             "source": a.source,
             "published": a.published_at.isoformat(),
             "title": a.title,
-            "summary": a.summary[:1500],
+            # Headline-only input is the normal case when a body could not be
+            # fetched, and the model needs to know which it is looking at. Told
+            # that a body exists, "no location named" is real evidence; told
+            # nothing, it is indistinguishable from "the body was not provided",
+            # and a model asked to find a street in a headline will invent one.
+            "has_body": "yes" if a.has_body else "no — headline and summary only",
+            "content": _content(a, settings.article_max_chars),
         }
         for a in articles
     ]
@@ -174,3 +247,12 @@ def extract_batch(
 
     log.info("extracted %d/%d articles", len(paired), len(articles))
     return paired
+
+
+def _content(article: Article, max_chars: int) -> str:
+    """The reading material, labelled so the model knows what it has."""
+    if article.has_body:
+        return f"Article text:\n{article.body[:max_chars]}"
+    if article.summary.strip():
+        return f"Summary (no article body available):\n{article.summary[:1500]}"
+    return "No summary or article body could be retrieved — you have only the title."

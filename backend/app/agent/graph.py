@@ -24,6 +24,7 @@ import hashlib
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from statistics import median
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -32,7 +33,8 @@ from ..config import get_settings
 from ..data.base import severity_of
 from ..data.nsi import Incident, NSILayer
 from .archive import append_incidents
-from .extract import ExtractedIncident, extract_batch
+from .extract import ExtractedIncident, extract_batch, is_too_coarse
+from .fetch import ArticleFetcher
 from .geocode import Geocoder
 from .sources import Article, NewsSource, default_sources
 
@@ -45,6 +47,10 @@ log = logging.getLogger(__name__)
 #: so a stricter threshold lets syndicated coverage through as distinct events
 #: and multiplies one incident's effect on the map.
 DUPLICATE_THRESHOLD = 0.5
+
+#: How much of each article to keep on the incident record. Enough to re-extract
+#: from later, bounded so the archive stays a text file rather than a corpus.
+ARCHIVE_TEXT_CHARS = 4000
 
 
 def _merge_stats(left: dict, right: dict) -> dict:
@@ -87,6 +93,16 @@ def node_fetch(state: NewsAgentState, sources: list[NewsSource] | None = None) -
             continue
         per_source[src.name] = len(got)
         articles.extend(got)
+
+    # A source that returns nothing while the others work is invisible in the
+    # total, and the runner only fails when every source is empty. GDELT can sit
+    # rate-limited for days behind a healthy RSS feed, and the layer just
+    # quietly gets thinner. Say it per source.
+    silent = [name for name, count in per_source.items() if count == 0]
+    if silent:
+        message = f"{', '.join(sorted(silent))}: returned 0 articles"
+        errors.append(message)
+        log.warning("%s — check the feed, not the news", message)
 
     log.info("fetched %d articles from %d sources", len(articles), len(srcs))
     return {
@@ -135,6 +151,37 @@ def node_prefilter(state: NewsAgentState) -> dict:
     return {"articles": kept, "stats": {"after_prefilter": len(kept)}}
 
 
+def node_enrich(state: NewsAgentState) -> dict:
+    """Fetch the article body for everything that cleared the prefilter.
+
+    After the prefilter, not before: bodies cost a request to someone else's
+    server, and there is no point paying that for a story about a traffic
+    advisory. Before extraction, because extraction is the step that needs to
+    read a street name out of a sentence.
+
+    A body that cannot be fetched is not an error — the article still goes to
+    the extractor on its title and summary, exactly as before. This step can
+    only add information.
+    """
+    articles = state.get("articles", [])
+    if not articles or not get_settings().fetch_article_bodies:
+        return {"stats": {"bodies_fetched": 0}}
+
+    fetcher = ArticleFetcher()
+    for article in articles:
+        article.body = fetcher.body(article.url)
+    fetcher.save_cache()
+
+    with_body = sum(1 for a in articles if a.has_body)
+    log.info(
+        "fetched bodies for %d/%d articles (median text now %d chars)",
+        with_body,
+        len(articles),
+        int(median([len(a.text) for a in articles])) if articles else 0,
+    )
+    return {"articles": articles, "stats": fetcher.stats.as_dict()}
+
+
 def node_extract(state: NewsAgentState) -> dict:
     articles = state.get("articles", [])
     if not articles:
@@ -150,11 +197,32 @@ def node_extract(state: NewsAgentState) -> dict:
             "stats": {"extracted": 0},
         }
 
-    incidents_only = [(a, e) for a, e in paired if e.is_safety_incident and e.location_text.strip()]
-    log.info("%d of %d extractions are located incidents", len(incidents_only), len(paired))
+    incidents_only: list[tuple[Article, ExtractedIncident]] = []
+    coarse = 0
+    for article, ex in paired:
+        if not ex.is_safety_incident:
+            continue
+        if is_too_coarse(ex.location_text):
+            # Counted rather than silently dropped: a run where most incidents
+            # fail this check means bodies are not being fetched, not that Delhi
+            # stopped naming streets.
+            coarse += 1
+            continue
+        incidents_only.append((article, ex))
+
+    log.info(
+        "%d of %d extractions are located incidents (%d dropped as too coarse)",
+        len(incidents_only),
+        len(paired),
+        coarse,
+    )
     return {
         "extracted": incidents_only,
-        "stats": {"extracted": len(paired), "located_incidents": len(incidents_only)},
+        "stats": {
+            "extracted": len(paired),
+            "located_incidents": len(incidents_only),
+            "dropped_coarse_location": coarse,
+        },
     }
 
 
@@ -198,6 +266,7 @@ def node_geocode(state: NewsAgentState) -> dict:
                 location_text=geo.formatted,
                 note=ex.note,
                 tags=["night"] if ex.night_time else [],
+                source_text=article.text[:ARCHIVE_TEXT_CHARS],
             )
         )
 
@@ -312,6 +381,7 @@ def build_graph(sources: list[NewsSource] | None = None):
     g.add_node("fetch", lambda s: node_fetch(s, sources))
     g.add_node("dedupe", node_dedupe)
     g.add_node("prefilter", node_prefilter)
+    g.add_node("enrich", node_enrich)
     g.add_node("extract", node_extract)
     g.add_node("geocode", node_geocode)
     g.add_node("merge", node_merge)
@@ -320,9 +390,10 @@ def build_graph(sources: list[NewsSource] | None = None):
     g.add_edge(START, "fetch")
     g.add_edge("fetch", "dedupe")
     g.add_edge("dedupe", "prefilter")
-    # Skip the paid stages entirely when there is nothing to process, but still
-    # run merge/persist so expired incidents age out on a quiet day.
-    g.add_conditional_edges("prefilter", _has_articles, {"extract": "extract", "merge": "merge"})
+    # Skip the expensive stages entirely when there is nothing to process, but
+    # still run merge/persist so expired incidents age out on a quiet day.
+    g.add_conditional_edges("prefilter", _has_articles, {"extract": "enrich", "merge": "merge"})
+    g.add_edge("enrich", "extract")
     g.add_edge("extract", "geocode")
     g.add_edge("geocode", "merge")
     g.add_edge("merge", "persist")
