@@ -34,6 +34,17 @@ from app.grid import get_grid  # noqa: E402
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 DEFAULT_CACHE = RAW_DIR / "delhi_pois.json"
 
+#: Overpass rejects requests carrying a client library's default User-Agent with
+#: a bare `406 Not Acceptable` and no explanation — easy to misread as a bad
+#: query or a rate limit. Identifying the client is also the documented etiquette
+#: for a free service run on donated hardware. For heavy use, add a contact
+#: address here.
+#:
+#: Mirrors, if the main endpoint is down or slow:
+#:   https://overpass.kumi.systems/api/interpreter
+#:   https://overpass.private.coffee/api/interpreter
+USER_AGENT = "NAVARA/0.1 (safe-route research; https://github.com/navara)"
+
 MIN_LON, MIN_LAT, MAX_LON, MAX_LAT = DELHI_BBOX
 
 # Weighted by how much each POI type implies sustained street presence rather
@@ -78,7 +89,17 @@ def fetch_pois(cache: Path, refresh: bool) -> list[dict]:
 
     print("Querying Overpass — this takes a minute or two for a city-sized bbox...")
     start = time.time()
-    r = httpx.post(OVERPASS_URL, data={"data": QUERY}, timeout=300.0)
+    r = httpx.post(
+        OVERPASS_URL,
+        data={"data": QUERY},
+        headers={"User-Agent": USER_AGENT},
+        timeout=300.0,
+    )
+    if r.status_code == 406:
+        raise RuntimeError(
+            "Overpass returned 406 Not Acceptable — it rejected the User-Agent. "
+            f"Check the USER_AGENT constant in {Path(__file__).name}."
+        )
     r.raise_for_status()
     payload = r.json()
 

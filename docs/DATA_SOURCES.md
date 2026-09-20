@@ -53,7 +53,7 @@ Two routes:
 
 | Source | Access | Notes |
 |---|---|---|
-| [NASA Black Marble](https://blackmarble.gsfc.nasa.gov/) | Free [Earthdata login](https://urs.earthdata.nasa.gov/), instant | **Recommended.** Grab tile `h26v06`, clip to Delhi. No GEE dependency |
+| [NASA Black Marble](https://blackmarble.gsfc.nasa.gov/) | Free [Earthdata login](https://urs.earthdata.nasa.gov/), instant | **Recommended.** Grab tile `h25v06`, clip to Delhi. No GEE dependency |
 | [Google Earth Engine](https://signup.earthengine.google.com) | Account approval, 1–2 days | Asset `NASA/VIIRS/002/VNP46A2`, band `Gap_Filled_DNB_BRDF_Corrected_NTL`. Better for compositing many nights server-side |
 
 **Use a multi-night median composite, not a single night.** One night's raster

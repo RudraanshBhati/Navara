@@ -32,6 +32,18 @@ python scripts/ingest_osm_poi.py
 python scripts/run_news_agent.py
 ```
 
+Step 2 is the one with no public dataset behind it. Until that is solved, the
+news agent doubles as the way to build one — every run appends to a permanent
+archive, and `export_archive.py` turns that archive into the CSV step 2 wants:
+
+```bash
+python scripts/export_archive.py --stats      # how much has accumulated
+python scripts/export_archive.py backend/data/raw/news_derived_crime.csv
+```
+
+That is a months-long loop, not an afternoon. Start the agent running early —
+it is the only part of this project gated on elapsed time rather than effort.
+
 Check progress at any point with `GET /health`, or `POST /admin/reload` to make
 a running server pick up newly built layers without a restart.
 
@@ -44,10 +56,12 @@ a running server pick up newly built layers without a restart.
 | `build_trc.py` | `crime_incidents.json` | none | `trc_hourly.json` |
 | `ingest_viirs.py` | VNP46A2 GeoTIFF | none (Earthdata to download) | `ntls.json` |
 | `ingest_osm_poi.py` | — (queries Overpass) | none | `cds.json` |
-| `run_news_agent.py` | — (fetches news) | `ANTHROPIC_API_KEY`, `GOOGLE_MAPS_API_KEY` | `nsi_incidents.json` |
+| `run_news_agent.py` | — (fetches news) | `ANTHROPIC_API_KEY`, `GOOGLE_MAPS_API_KEY` | `nsi_incidents.json`, `nsi_archive.jsonl` |
+| `export_archive.py` | `nsi_archive.jsonl` | none | a crime CSV for `ingest_crime_data.py` |
 
-Everything lands in `backend/data/processed/`, which is gitignored — all of it
-is reproducible from here.
+Everything lands in `backend/data/processed/` and is reproducible from here —
+**except `backend/data/archive/`**, which accumulates day by day and cannot be
+rebuilt. See [`backend/data/archive/README.md`](../backend/data/archive/README.md).
 
 See [`docs/DATA_SOURCES.md`](../docs/DATA_SOURCES.md) for where to get the
 inputs, and in particular why district-level annual crime totals will not work.
