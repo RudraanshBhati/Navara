@@ -111,7 +111,7 @@ Response (trimmed to one route and two segments):
 
       "worst_stretch": {            // the longest bad run, or null
         "length_m": 600, "css": 0.31, "band": "risk",
-        "reason": "ntls",           // layer key to blame
+        "reason": "ntls",           // layer key to blame, OR null — see below
         "start": { "lat": 28.60, "lng": 77.21 },
         "end":   { "lat": 28.59, "lng": 77.22 }
       },
@@ -150,6 +150,17 @@ Response (trimmed to one route and two segments):
 ```
 
 Routes come back **already sorted safest-first**. Don't re-sort them.
+
+**`worst_stretch.reason` can be `null`.** It names the layer to blame, but only
+when a layer that actually holds data for those cells can be blamed. When the
+layers that would explain a bad stretch are unbuilt, the stretch is still real
+and still worth drawing — there is simply nothing honest to attribute it to.
+Render the geometry and fall back to the `reasons` bullets, which say so in
+words. Do not substitute a guess, and do not hide the stretch.
+
+The same rule governs `segments[].flag` and the `reasons` list: a layer is never
+named unless it measured the ground it is being cited about. That is why a
+reason may carry a qualifier like *"Measured on 87% of the route."*  — show it.
 
 Errors: `422` for a malformed request or a point outside Delhi, `502` if the
 routing provider fails. Both carry a human-readable `detail` string — show it.

@@ -47,10 +47,20 @@ class ScoredSegment:
     deficits: dict[str, float]
     #: layer -> raw v_i, kept for debugging and the layer-detail panel
     raw: dict[str, float]
+    #: Layers that actually hold data for this cell. A layer with no data sits
+    #: at NEUTRAL, which produces a deficit of half its weight out of nothing —
+    #: large enough to out-rank every real layer and win any "what is wrong with
+    #: this road" contest. Nothing may blame a layer outside this set.
+    grounded: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def dominant_deficit(self) -> str:
         return max(self.deficits, key=lambda k: self.deficits[k])
+
+    @property
+    def grounded_deficits(self) -> dict[str, float]:
+        """Deficits that are evidence rather than absence of evidence."""
+        return {n: d for n, d in self.deficits.items() if n in self.grounded}
 
     @property
     def midpoint(self) -> tuple[float, float]:
@@ -143,11 +153,15 @@ def score_segment(
     deficits: dict[str, float] = {}
 
     layer_map = layers.as_dict()
+    grounded: set[str] = set()
     for name, weight in weights.items():
-        v = layer_map[name].value(cell_id, when)
+        layer = layer_map[name]
+        v = layer.value(cell_id, when)
         raw[name] = v
         contributions[name] = weight * v
         deficits[name] = weight * (1.0 - v)
+        if layer.has(cell_id):
+            grounded.add(name)
 
     css = sum(contributions.values())
     return ScoredSegment(
@@ -160,6 +174,7 @@ def score_segment(
         contributions=contributions,
         deficits=deficits,
         raw=raw,
+        grounded=frozenset(grounded),
     )
 
 
@@ -232,6 +247,12 @@ def find_worst_stretch(segments: list[ScoredSegment], min_length_m: float = 150.
     Reported instead of the single worst segment because one bad 100 m sample
     is usually a data artefact, while 600 m of continuous amber is a road. This
     is the thing a route explanation should actually be about.
+
+    ``reason`` is the layer to blame, and it is **None** when no layer with data
+    can be blamed. The stretch itself is still real — those segments genuinely
+    score below the route average — but with the layers that explain it unbuilt,
+    naming one would be inventing a cause. Callers must handle the None rather
+    than assuming there is always something to point at.
     """
     if not segments:
         return None
@@ -250,16 +271,18 @@ def find_worst_stretch(segments: list[ScoredSegment], min_length_m: float = 150.
         mean_css = sum(s.css * s.length_m for s in run) / length
         if best is None or length > best["length_m"]:
             # Attribute the stretch to the layer that lost it the most points
-            # overall, not the one that dominates any single segment.
+            # overall, not the one that dominates any single segment — and only
+            # among layers holding data for the cells in question, or an unbuilt
+            # layer's NEUTRAL deficit wins every time by default.
             totals: dict[str, float] = {}
             for s in run:
-                for name, d in s.deficits.items():
+                for name, d in s.grounded_deficits.items():
                     totals[name] = totals.get(name, 0.0) + d * s.length_m
             best = {
                 "length_m": length,
                 "css": mean_css,
                 "band": band_for(mean_css),
-                "reason": max(totals, key=lambda k: totals[k]),
+                "reason": max(totals, key=lambda k: totals[k]) if totals else None,
                 "start": run[0].start,
                 "end": run[-1].end,
             }

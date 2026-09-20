@@ -23,6 +23,12 @@ from .scoring import ScoredRoute, ScoredSegment
 #: map fills up with flags on roads that are completely fine.
 DEFICIT_FLOOR = 0.06
 
+#: A layer must have measured at least this much of a route before it may be
+#: named in a route-level claim. A layer covering a tenth of the route may well
+#: be right about that tenth, but "below par along most of the route" is a claim
+#: about the whole thing.
+MIN_LAYER_COVERAGE = 0.5
+
 
 def segment_flag(segment: ScoredSegment, registry: LayerRegistry | None = None) -> str | None:
     """The one-phrase reason this segment is not green, or None if it is fine.
@@ -71,28 +77,43 @@ def route_reasons(route: ScoredRoute, when: datetime) -> list[str]:
 
     worst = route.worst_stretch
     if worst:
-        label = LAYER_LABELS[worst["reason"]].lower()
-        reasons.append(
-            f"{_distance(worst['length_m'])} of this route scores below its own "
-            f"average, mostly on {label}."
-        )
+        # `reason` is None when no layer with data could be blamed. The stretch
+        # is still worth reporting — it really does score below the route
+        # average — but the sentence stops at what is known.
+        if worst["reason"]:
+            label = LAYER_LABELS[worst["reason"]].lower()
+            reasons.append(
+                f"{_distance(worst['length_m'])} of this route scores below its own "
+                f"average, mostly on {label}."
+            )
+        else:
+            reasons.append(
+                f"{_distance(worst['length_m'])} of this route scores below its own "
+                "average, but the layers that would explain why have no data here."
+            )
 
     # Which layers are pulling the route down overall, as a share of what they
-    # could have contributed.
+    # could have contributed — restricted to layers that actually measured this
+    # route. An unbuilt layer contributes half its weight from NEUTRAL, which
+    # reads as a 50% shortfall and produces a confident "X is below par along
+    # most of the route" sourced from nothing at all.
     from .config import DEFAULT_WEIGHTS
 
     shortfalls = {
         name: (DEFAULT_WEIGHTS[name] - got) / DEFAULT_WEIGHTS[name]
         for name, got in route.layer_contributions.items()
-        if DEFAULT_WEIGHTS.get(name)
+        if DEFAULT_WEIGHTS.get(name) and _layer_coverage(route, name) >= MIN_LAYER_COVERAGE
     }
     for name, shortfall in sorted(shortfalls.items(), key=lambda kv: -kv[1])[:2]:
         if shortfall < 0.25:
             continue
         layer = layers.as_dict()[name]
         text = f"{LAYER_LABELS[name]} is below par along most of the route."
+        coverage = _layer_coverage(route, name)
         if layer.confidence == "low":
             text += " This layer is a rough proxy — treat it as a hint, not a fact."
+        if coverage < 0.9:
+            text += f" Measured on {coverage:.0%} of the route."
         reasons.append(text)
 
     if route.coverage < 0.6:
@@ -182,10 +203,11 @@ def compare(chosen: ScoredRoute, alternative: ScoredRoute | None) -> str:
         )
 
     reason = ""
-    if alternative.worst_stretch:
+    worst = alternative.worst_stretch
+    if worst and worst["reason"]:
         reason = (
-            f", avoiding {_distance(alternative.worst_stretch['length_m'])} of "
-            f"{LAYER_LABELS[alternative.worst_stretch['reason']].lower()} on the alternative"
+            f", avoiding {_distance(worst['length_m'])} of "
+            f"{LAYER_LABELS[worst['reason']].lower()} on the alternative"
         )
 
     if d_dist <= 0:
@@ -204,6 +226,14 @@ def compare(chosen: ScoredRoute, alternative: ScoredRoute | None) -> str:
 # ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
+
+
+def _layer_coverage(route: ScoredRoute, name: str) -> float:
+    """Fraction of route length where this layer actually had data."""
+    total = sum(s.length_m for s in route.segments)
+    if total <= 0:
+        return 0.0
+    return sum(s.length_m for s in route.segments if name in s.grounded) / total
 
 
 def _distance(metres: float) -> str:

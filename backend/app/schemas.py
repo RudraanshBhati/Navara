@@ -88,7 +88,14 @@ class WorstStretch(BaseModel):
     length_m: float
     css: float
     band: str
-    reason: str = Field(description="Layer key that most explains this stretch")
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "Layer key that most explains this stretch, or null when no layer "
+            "with data for these cells can explain it. The stretch is real "
+            "either way — do not invent a cause when this is null."
+        ),
+    )
     start: LatLng
     end: LatLng
 

@@ -5,7 +5,11 @@ from app.explain import _distance, _duration, compare, segment_flag, summarise
 from app.scoring import ScoredRoute, ScoredSegment, score_segment
 
 
-def _segment(css: float, worst_layer: str = "ntls") -> ScoredSegment:
+def _segment(
+    css: float,
+    worst_layer: str = "ntls",
+    grounded: frozenset[str] | None = None,
+) -> ScoredSegment:
     deficits = {k: 0.01 for k in DEFAULT_WEIGHTS}
     deficits[worst_layer] = 0.20
     return ScoredSegment(
@@ -18,12 +22,22 @@ def _segment(css: float, worst_layer: str = "ntls") -> ScoredSegment:
         contributions={k: v * css for k, v in DEFAULT_WEIGHTS.items()},
         deficits=deficits,
         raw=dict.fromkeys(DEFAULT_WEIGHTS, css),
+        grounded=frozenset(DEFAULT_WEIGHTS) if grounded is None else grounded,
     )
 
 
-def _route(css: float, distance: float, worst: dict | None = None) -> ScoredRoute:
+def _route(
+    css: float,
+    distance: float,
+    worst: dict | None = None,
+    grounded: frozenset[str] | None = None,
+) -> ScoredRoute:
+    # Real routes always have segments, and route-level explanations now check
+    # which layers measured them before naming one. A segment-less route would
+    # silently disqualify every layer and make these tests pass for the wrong
+    # reason.
     return ScoredRoute(
-        segments=[],
+        segments=[_segment(css, grounded=grounded) for _ in range(10)],
         css=css,
         band=band_for(css),
         distance_m=distance,
@@ -118,6 +132,53 @@ def test_reasons_caveat_the_low_confidence_layer(grid, layers, night):
 
     reasons = route_reasons(route, night)
     assert any("proxy" in r.lower() for r in reasons)
+
+
+def test_an_unbuilt_layer_is_never_named_in_a_reason(grid, layers, night):
+    """The cardinal rule: no claim sourced from a layer with no data.
+
+    An unbuilt layer sits at NEUTRAL, so it looks like a 50% shortfall and beats
+    every real layer's deficit. Left unchecked it produces "Crime incidence is
+    below par along most of the route" on a route where crime data does not
+    exist — a confident sentence with nothing behind it, which is the one
+    failure this product cannot afford.
+    """
+    from app.explain import route_reasons
+
+    # Only lighting has data; crime has none.
+    route = _route(0.5, 1000, grounded=frozenset({"ntls"}))
+    route.layer_contributions = {**DEFAULT_WEIGHTS, "cip": 0.15, "ntls": 0.10}
+    route.coverage = 1.0
+
+    reasons = " ".join(route_reasons(route, night)).lower()
+
+    assert "crime" not in reasons
+    assert "lighting" in reasons
+
+
+def test_a_worst_stretch_with_no_grounded_layer_blames_nothing(grid, layers, night):
+    """The stretch is real even when nothing can explain it. Say that instead."""
+    from app.explain import route_reasons
+
+    route = _route(0.5, 1000, worst={"length_m": 600, "reason": None})
+    route.layer_contributions = dict(DEFAULT_WEIGHTS)
+    route.coverage = 1.0
+
+    text = " ".join(route_reasons(route, night))
+
+    assert "600 m" in text
+    assert "no data" in text.lower()
+
+
+def test_comparison_omits_an_unattributable_stretch(grid, layers):
+    """`reason: None` must not crash or invent a cause in the headline sentence."""
+    chosen = _route(0.80, 2500)
+    alternative = _route(0.55, 2000, worst={"length_m": 600, "reason": None})
+
+    text = compare(chosen, alternative)
+
+    assert "avoiding" not in text
+    assert "0.80" in text
 
 
 def test_reasons_are_never_empty(grid, layers, night):
