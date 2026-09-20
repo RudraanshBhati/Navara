@@ -39,6 +39,12 @@ INCIDENTS_PATH = PROCESSED_DIR / "nsi_incidents.json"
 #: black-hole an entire neighbourhood on its own.
 SATURATION = 3.0
 
+#: How far into the future an incident may be dated and still count, treated as
+#: age zero. Covers clock skew between a news source's timestamp and ours, and
+#: the sub-second gap between geocoding an incident and scoring it. One hour is
+#: far below the one-week halflife, so this cannot meaningfully inflate a score.
+FUTURE_TOLERANCE_DAYS = 1.0 / 24.0
+
 
 @dataclass
 class Incident:
@@ -177,7 +183,17 @@ class NSILayer(Layer):
         for idx, spatial_w in entries:
             inc = self.incidents[idx]
             age_days = (when - inc.occurred_dt).total_seconds() / 86_400.0
-            if age_days < 0 or age_days > max_age:
+            if age_days < 0:
+                # A genuinely future-dated incident is a bad extraction and is
+                # dropped. But an incident timestamped "just now" routinely
+                # lands a few milliseconds ahead of the clock we compare it
+                # against, and silently zeroing the freshest incidents — the
+                # ones this layer exists to surface — is the worst possible
+                # place for an off-by-a-microsecond.
+                if -age_days > FUTURE_TOLERANCE_DAYS:
+                    continue
+                age_days = 0.0
+            if age_days > max_age:
                 continue
             decay = 2.0 ** (-age_days / halflife)
             total += inc.severity * inc.confidence * spatial_w * decay

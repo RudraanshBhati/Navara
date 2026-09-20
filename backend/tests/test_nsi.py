@@ -82,6 +82,29 @@ def test_incidents_past_max_age_are_ignored_entirely():
     assert _layer([_incident(too_old)]).value(cell, now) == 1.0
 
 
+def test_an_incident_dated_a_moment_ahead_still_counts():
+    """Clock skew must not silently erase the freshest incidents.
+
+    An incident geocoded "just now" routinely carries a timestamp a few
+    milliseconds ahead of the clock it is later scored against. Dropping it as
+    future-dated would zero out exactly the incidents this layer exists to
+    surface — and it fails silently, as a score that looks merely clean.
+    """
+    now = datetime.now(UTC)
+    cell = get_grid().cell_id(28.6139, 77.2090)
+    just_ahead = _incident(-1.0 / 86_400.0)  # one second into the future
+
+    assert _layer([just_ahead]).value(cell, now) < 1.0
+
+
+def test_a_genuinely_future_dated_incident_is_dropped():
+    """The tolerance is for clock skew, not for a bad extraction."""
+    now = datetime.now(UTC)
+    cell = get_grid().cell_id(28.6139, 77.2090)
+
+    assert _layer([_incident(-3.0)]).value(cell, now) == 1.0
+
+
 def test_low_confidence_incidents_move_the_score_less():
     now = datetime.now(UTC)
     cell = get_grid().cell_id(28.6139, 77.2090)
