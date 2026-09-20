@@ -18,11 +18,15 @@ number; a score that shows its reasoning is a decision someone can act on.
 
 | Part | State |
 |---|---|
-| Scoring engine, API, news agent | **Working.** 87 tests passing, lint clean |
-| Data layers | **Not ingested.** Scripts written; datasets not yet loaded |
+| Scoring engine, API, news agent | **Working.** 106 tests passing, lint clean |
+| Routing | **Live** on the Google Routes API |
+| NTLS (lighting) | **Built.** 12-night VIIRS median, all 10,700 cells |
+| CDS (crowd proxy) | **Built.** 24,443 OSM POIs across 2,505 cells |
+| CIP + TRC (crime) | **Blocked.** No public incident-level Delhi dataset exists — the news agent accumulates one. See [`backend/data/archive/`](backend/data/archive/README.md) |
+| NSI (news) | Agent works; needs an extraction model to start accumulating |
 | Frontend | **Not started.** See [`docs/FRONTEND_GUIDE.md`](docs/FRONTEND_GUIDE.md) |
 
-The backend runs today with no API keys and no data — it serves correctly-shaped
+The backend still runs with no API keys and no data — it serves correctly-shaped
 routes from an offline mock router and says so loudly in every response.
 
 ## Quick start
