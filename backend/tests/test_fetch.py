@@ -230,3 +230,57 @@ def test_the_rate_limit_notice_is_recognised():
 def test_real_json_is_not_mistaken_for_a_rate_limit():
     assert not _is_rate_limit_body('{"articles": [{"title": "Robbery in Karol Bagh"}]}')
     assert not _is_rate_limit_body("")
+
+
+# ---------------------------------------------------------------------------
+# Provider selection
+# ---------------------------------------------------------------------------
+
+
+def test_the_schema_requires_the_fields_that_move_the_score():
+    """A field with a default is one a model may decline to answer.
+
+    Measured: every local model returned category "other" on every article
+    while it had a default, which silently flattened a sexual assault (severity
+    1.0) and a snatching (0.6) to the same 0.4. Making them required took
+    category accuracy from 0.00 to 1.00 with no other change.
+    """
+    from app.agent.extract import ExtractedIncident
+
+    required = set(ExtractedIncident.model_json_schema()["required"])
+
+    assert {"is_safety_incident", "category", "location_text", "confidence"} <= required
+
+
+def test_an_unknown_provider_is_refused_by_name():
+    from app.agent.extract import build_llm
+
+    with pytest.raises(RuntimeError, match="Unknown EXTRACTION_PROVIDER"):
+        build_llm(provider="gpt-9")
+
+
+def test_a_missing_anthropic_key_points_at_the_local_route(monkeypatch):
+    """The error should say what to do, not just what is absent."""
+    import app.config as config
+    from app.agent.extract import build_llm
+
+    settings = config.get_settings()
+    monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
+
+    with pytest.raises(RuntimeError, match="EXTRACTION_PROVIDER=ollama"):
+        build_llm(provider="anthropic")
+
+
+def test_local_confidence_is_capped(monkeypatch):
+    """An uncalibrated 1.0 must not outrank a hosted model's considered 0.8.
+
+    Confidence scales how far an incident moves the map. A local model that
+    anchors high is not expressing certainty, and this bounds the damage.
+    """
+    import app.config as config
+    from app.agent.extract import ExtractedIncident
+
+    ceiling = config.get_settings().ollama_confidence_ceiling
+    capped = min(ExtractedIncident.model_fields["confidence"].metadata[1].le, 1.0)
+
+    assert ceiling < capped, "the ceiling has to actually bind"

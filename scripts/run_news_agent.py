@@ -36,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from app.agent.archive import ARCHIVE_PATH, archive_stats  # noqa: E402
+from app.agent.extract import verify_structured_output  # noqa: E402
 from app.agent.graph import run_agent  # noqa: E402
 from app.agent.sources import Article, NewsSource  # noqa: E402
 
@@ -84,6 +85,11 @@ def main() -> int:
     parser.add_argument("--lookback", type=int, default=None, help="Hours to look back")
     parser.add_argument("--dry-run", action="store_true", help="Do not write the layer")
     parser.add_argument("--offline", action="store_true", help="Use canned articles")
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Do not check the extraction model honours the schema before running",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -91,6 +97,14 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)-7s %(name)s | %(message)s",
     )
+
+    if not args.skip_preflight:
+        problem = verify_structured_output()
+        if problem:
+            print(f"\nExtraction preflight failed:\n  {problem}\n")
+            print("Nothing was fetched. Fix the model, or pass --skip-preflight to")
+            print("run anyway and see the per-article failures.")
+            return 1
 
     sources = [FixtureSource()] if args.offline else None
     state = run_agent(lookback_hours=args.lookback, dry_run=args.dry_run, sources=sources)

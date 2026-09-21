@@ -94,18 +94,34 @@ class ExtractedIncident(BaseModel):
             "accidents, national news, and crime statistics reporting."
         )
     )
+    # NOTE ON REQUIRED FIELDS
+    # Every field that moves the score is required and carries no default.
+    # A field with a default is one a model may simply not answer, and smaller
+    # models routinely don't: measured across local models, `category` came back
+    # "other" on 100% of extractions and one model returned confidence 0.50 on
+    # every article — both of which were the schema defaults showing through, not
+    # judgements. Since severity_of("other") is 0.4, that silently flattened a
+    # sexual assault (1.0) and a snatching (0.6) to the same weight, defeating
+    # the severity weighting RESEARCH.md calls not optional.
     category: Literal[tuple(CATEGORIES)] = Field(  # type: ignore[valid-type]
-        default="other",
-        description="The offence type that best matches. Use 'other' if unsure.",
+        description=(
+            "The offence type. This sets how heavily the incident is weighted, "
+            "so choose the closest match rather than defaulting: sexual_assault, "
+            "assault, kidnapping, murder, harassment, stalking, robbery, "
+            "snatching, theft, burglary, vehicle_theft. Use 'other' only when "
+            "the article genuinely describes none of these — not merely when "
+            "more than one could fit, in which case pick the most severe one "
+            "the article supports."
+        ),
     )
     location_text: str = Field(
-        default="",
         description=(
             "The most specific place named in the article, as a geocodable "
             "string, e.g. 'Saket Metro Station, New Delhi' or 'Karol Bagh "
-            "market, Delhi'. Empty string if the article names nothing more "
-            "specific than a district — 'Delhi', 'South Delhi', 'NCR' and the "
-            "like are all too coarse to place on a 500 m grid."
+            "market, Delhi'. Return an empty string if the article names "
+            "nothing more specific than a district — 'Delhi', 'South Delhi', "
+            "'NCR' and the like are all too coarse to place on a 500 m grid. "
+            "Answer this field explicitly either way."
         ),
     )
     occurred_at: str = Field(
@@ -117,17 +133,18 @@ class ExtractedIncident(BaseModel):
         ),
     )
     confidence: float = Field(
-        default=0.5,
         ge=0.0,
         le=1.0,
         description=(
             "How confident you are that this is a real, recent, correctly "
-            "located Delhi safety incident. Be strict: 0.9+ only when the "
-            "article names a specific place and a specific event."
+            "located Delhi safety incident. This multiplies how far the "
+            "incident moves the map, so spread your answers across the range "
+            "rather than anchoring on one value: 0.9+ only when the article "
+            "names both a specific place and a specific event, 0.5 or below "
+            "when the place is vague, the date is unclear, or you are inferring."
         ),
     )
     night_time: bool = Field(
-        default=False,
         description="True if the article indicates the incident happened after dark.",
     )
     note: str = Field(
@@ -153,9 +170,17 @@ like information. Leave location_text empty rather than naming one.
 - If you are not sure the event is recent, lower your confidence rather than \
 guessing a date.
 - Articles about crime statistics, policy, arrests in old cases, or court \
-hearings are NOT incidents. Only report something that happened at a place. \
-Neither are road accidents, unless a pedestrian was targeted rather than \
-involved in a collision.
+hearings are NOT incidents. Only report something that happened at a place.
+
+ROAD COLLISIONS ARE NOT INCIDENTS HERE
+A vehicle hitting people is a traffic accident, however many were hurt and \
+however much they were on foot at the time. Set is_safety_incident false for \
+it. This layer feeds a model of *crime* risk whose severity weights are \
+calibrated to deliberate harm, so a collision entering it would be scored as \
+though someone had been attacked. Rash driving, hit-and-run, a truck hitting \
+workers or a crane, a bus mounting a pavement — all false. The exception is \
+narrow: a vehicle used deliberately against a person, which the article will \
+describe as an attack rather than an accident.
 
 WHEN YOU ONLY HAVE A HEADLINE
 The prompt tells you whether an article body was available. When it was not, \
@@ -177,15 +202,51 @@ Title: {title}
 {content}"""
 
 
-def build_chain(model: str | None = None):
-    """Prompt -> Claude -> validated schema."""
+def build_llm(model: str | None = None, provider: str | None = None):
+    """The extraction model, hosted or local.
+
+    Both are asked for the same Pydantic schema, so everything downstream is
+    identical — `with_structured_output` constrains an Ollama model through
+    its JSON-schema mode the same way it constrains Claude through tool use.
+    What differs is quality, and it differs most on the two fields that carry
+    the most weight: `location_text`, which decides which streets get a warning,
+    and `confidence`, which a smaller model reports far less honestly about
+    itself. Weigh that against not accumulating any archive at all.
+    """
     settings = get_settings()
-    if not settings.anthropic_api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Add it to backend/.env — see .env.example."
+    provider = (provider or settings.extraction_provider).strip().lower()
+
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            model=model or settings.ollama_model,
+            base_url=settings.ollama_base_url,
+            temperature=0,
+            # Deterministic-ish extraction: we want the same article to produce
+            # the same incident on a re-run, so re-extraction is idempotent
+            # against the archive rather than churning it.
+            num_predict=settings.ollama_num_predict,
+            # Both of these are load-bearing, and both fail silently when wrong
+            # — the model returns an empty string rather than an error, and the
+            # article is dropped with a parse warning that looks like a model
+            # quality problem. See config.py for the measurements.
+            num_ctx=settings.ollama_num_ctx,
+            reasoning=settings.ollama_reasoning,
         )
 
-    llm = ChatAnthropic(
+    if provider != "anthropic":
+        raise RuntimeError(
+            f"Unknown EXTRACTION_PROVIDER {provider!r}. Use 'anthropic' or 'ollama'."
+        )
+
+    if not settings.anthropic_api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set. Add it to backend/.env — see .env.example.\n"
+            "To run without a key, set EXTRACTION_PROVIDER=ollama and start Ollama."
+        )
+
+    return ChatAnthropic(
         model=model or settings.news_model,
         api_key=settings.anthropic_api_key,
         temperature=0,
@@ -193,15 +254,70 @@ def build_chain(model: str | None = None):
         timeout=60,
         max_retries=2,
     )
+
+
+def build_chain(model: str | None = None, provider: str | None = None):
+    """Prompt -> model -> validated schema."""
+    llm = build_llm(model, provider)
     prompt = ChatPromptTemplate.from_messages([("system", SYSTEM_PROMPT), ("human", USER_PROMPT)])
     return prompt | llm.with_structured_output(ExtractedIncident)
+
+
+def verify_structured_output(model: str | None = None, provider: str | None = None) -> str | None:
+    """Check the model actually fills in the schema. None means it works.
+
+    The failure this guards against is silent and expensive. A model that
+    ignores the JSON schema returns confident prose; every article then fails to
+    parse, the run logs a per-article warning, and the summary reports zero
+    incidents — which looks exactly like a quiet news day. Four of the eight
+    local models measured behaved this way. Discovering it after a week of empty
+    nightly runs costs a week of archive that cannot be backfilled, because the
+    articles have rotated off the feeds by then.
+    """
+    probe = (
+        "A woman was robbed at knifepoint near Saket Metro station in Delhi on "
+        "Tuesday night. An FIR was registered at Malviya Nagar police station."
+    )
+    name = model or (
+        get_settings().ollama_model
+        if (provider or get_settings().extraction_provider) == "ollama"
+        else get_settings().news_model
+    )
+
+    try:
+        result = build_chain(model, provider).invoke(
+            {
+                "source": "preflight",
+                "published": "2026-01-01T00:00:00+00:00",
+                "has_body": "yes",
+                "title": "Woman robbed near Saket Metro station",
+                "content": f"Article text:\n{probe}",
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - the job here is to report, not raise
+        return (
+            f"{name} did not return the expected schema ({type(exc).__name__}). "
+            "Some models ignore a JSON schema and answer in prose, which would "
+            "drop every article. Try gemma3:12b, or run "
+            "scripts/eval_extractor.py to compare."
+        )
+
+    if not result.is_safety_incident or is_too_coarse(result.location_text):
+        return (
+            f"{name} parsed the schema but found no located incident in an "
+            f"unambiguous test article (got location {result.location_text!r}). "
+            "It will produce empty runs. Compare models with "
+            "scripts/eval_extractor.py."
+        )
+    return None
 
 
 def extract_batch(
     articles: list[Article],
     *,
     model: str | None = None,
-    max_concurrency: int = 5,
+    provider: str | None = None,
+    max_concurrency: int | None = None,
 ) -> list[tuple[Article, ExtractedIncident]]:
     """Extract from many articles at once.
 
@@ -214,8 +330,12 @@ def extract_batch(
     if not articles:
         return []
 
-    chain = build_chain(model)
     settings = get_settings()
+    provider = (provider or settings.extraction_provider).strip().lower()
+    chain = build_chain(model, provider)
+
+    if max_concurrency is None:
+        max_concurrency = settings.ollama_max_concurrency if provider == "ollama" else 5
     inputs = [
         {
             "source": a.source,
@@ -239,13 +359,31 @@ def extract_batch(
     )
 
     paired: list[tuple[Article, ExtractedIncident]] = []
+    failures = 0
     for article, result in zip(articles, results, strict=True):
         if isinstance(result, BaseException):
             log.warning("extraction failed for %s: %s", article.url, result)
+            failures += 1
             continue
+        if provider == "ollama":
+            result.confidence = min(result.confidence, settings.ollama_confidence_ceiling)
         paired.append((article, result))
 
-    log.info("extracted %d/%d articles", len(paired), len(articles))
+    # Every article failing is a configuration problem, not a news problem, and
+    # the per-article warnings above scroll past. Say it once, plainly.
+    if failures and not paired:
+        log.error(
+            "Every article failed to parse. %s is probably not honouring the "
+            "output schema — check with scripts/eval_extractor.py.",
+            model or (settings.ollama_model if provider == "ollama" else settings.news_model),
+        )
+
+    log.info(
+        "extracted %d/%d articles via %s",
+        len(paired),
+        len(articles),
+        provider,
+    )
     return paired
 
 

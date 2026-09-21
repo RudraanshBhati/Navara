@@ -50,7 +50,76 @@ class Settings(BaseSettings):
     segment_length_m: float = 100.0
 
     # --- News agent ---
+    #: Which backend extracts incidents from articles: "anthropic" or "ollama".
+    #:
+    #: Ollama exists here for one reason. The archive that CIP and TRC depend on
+    #: accumulates in calendar time, so a month not spent running the agent is a
+    #: month of crime data that cannot be recovered — the articles rotate off
+    #: the feeds. A local model starts that clock tonight with no key and no
+    #: billing, at a quality cost on the two fields that matter most
+    #: (location_text and confidence). Incidents keep the text they were
+    #: extracted from, so the backlog can be re-extracted later with a better
+    #: model; the accumulation cannot be recovered later.
+    extraction_provider: str = Field(default="anthropic", alias="EXTRACTION_PROVIDER")
     news_model: str = Field(default="claude-sonnet-5", alias="NEWS_MODEL")
+    #: Measured with scripts/eval_extractor.py, September 2026, RTX 4070 12 GB.
+    #: Re-run it before changing this; the differences are not small.
+    #:
+    #:   model              prec   rec   loc   cat  conf sd
+    #:   gemma3:12b         1.00  1.00  1.00  0.67     0.25   <- default
+    #:   phi4:14b           0.75  1.00  1.00  1.00     0.10
+    #:   llama3.1:8b        1.00  0.67  1.00  1.00     0.23
+    #:   qwen2.5:7b         1.00  0.33  1.00  0.67     0.08
+    #:   mistral-nemo:12b      parsed 2/11 — unusable
+    #:   qwen3.5:9b            ignores the schema, answers in prose
+    #:   lfm2.5:8b             leaks <think> blocks instead of JSON
+    #:   granite4.1:8b         never fills location_text, 0 usable incidents
+    #:
+    #: gemma3 for recall and precision together. A missed incident is a
+    #: permanent hole in the archive, which rules out the 8B models; phi4 keeps
+    #: recall but calls an accidental gas explosion a safety incident.
+    #:
+    #: Two caveats on these numbers. Timing is not in the table because a cold
+    #: model load dominates it — phi4 measured 44s an article cold and 2.4s
+    #: warm, so a first run says nothing about a steady state. And the eval set
+    #: is eleven hand-written cases: gemma3 scores 1.00 on it and still made
+    #: three bad calls on live feeds in a single run. Treat a good score as
+    #: "not obviously broken", not as evidence of quality.
+    #:
+    #: Note the failure mode of the bottom four. They do not error — they return
+    #: fluent prose, every article fails to parse, and the run reports zero
+    #: incidents, which is indistinguishable from a quiet news day. That is what
+    #: `verify_structured_output` exists to catch.
+    ollama_model: str = Field(default="gemma3:12b", alias="OLLAMA_MODEL")
+    ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
+    #: Local models are slower per call than a hosted API and run one at a time
+    #: on one GPU, so the concurrency that helps Claude only causes contention.
+    ollama_max_concurrency: int = 1
+    #: Ollama defaults to a small context (4096) and silently truncates past it.
+    #: An article body plus this prompt overruns that, and the failure mode is
+    #: an empty response rather than an error.
+    ollama_num_ctx: int = 8192
+    ollama_num_predict: int = 1024
+    #: Disable chain-of-thought for extraction. Measured on qwen3.5:9b against a
+    #: real Delhi article: thinking on burned 4,096 tokens in 60s and returned
+    #: an empty string, because the reasoning never finished and the JSON never
+    #: started. Off, the same article answered in 92 tokens and 2 seconds.
+    #: This is a constrained extraction against a fixed schema — there is
+    #: nothing here that wants deliberation.
+    ollama_reasoning: bool = False
+    #: Ceiling on the confidence a local model may claim.
+    #:
+    #: Measured: llama3.1:8b returned confidence 1.0 on every single extraction,
+    #: including two it had no business being certain about. That number is not
+    #: an opinion the model formed, it is a token it likes — and it scales how
+    #: far an incident moves the map (see data/nsi.py). Letting an uncalibrated
+    #: 1.0 through would make a local extraction count for more than a hedged
+    #: hosted one, which is backwards.
+    #:
+    #: This does not make the number calibrated. It bounds how much damage an
+    #: uncalibrated one can do, and it is why the archive keeps source_text:
+    #: re-extraction with a better model is the actual fix.
+    ollama_confidence_ceiling: float = 0.7
     #: How far back a news run looks.
     news_lookback_hours: int = 48
     #: A news-derived incident stops influencing the score after this long.

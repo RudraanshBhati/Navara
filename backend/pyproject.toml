@@ -19,8 +19,17 @@ dependencies = [
     "langchain>=0.3",
     "langchain-core>=0.3",
     "langchain-anthropic>=0.3",
+    # Local extraction. Small — an HTTP wrapper around a local Ollama server —
+    # and not optional, because without it the no-key path does not exist and
+    # the news archive cannot start accumulating until someone sets up billing.
+    "langchain-ollama>=1.1",
     "langgraph>=0.2.50",
     "langgraph-checkpoint-sqlite>=2.0",
+    # Article body extraction. Required rather than optional: without it the
+    # agent silently falls back to extracting incidents from headlines, which
+    # is the failure it was added to fix. A degraded extractor that still
+    # returns plausible locations is worse than one that stops.
+    "trafilatura>=2.0",
 
     # --- Data / ingest ---
     "numpy>=1.26",
