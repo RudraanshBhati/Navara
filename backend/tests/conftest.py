@@ -21,12 +21,26 @@ from app.grid import Grid, reset_grid
 
 
 @pytest.fixture(autouse=True)
-def _clean_globals():
+def _clean_globals(tmp_path, monkeypatch):
+    """Also pins the street-level terms to *no data*: the road network and map
+    places live in data/processed/ like the layers, and a test that scored a
+    route against them would pass or fail depending on the machine."""
+    import app.features as features_mod
+    import app.pois as pois_mod
+    from app.features import reset_features
+
+    monkeypatch.setattr(features_mod, "ROADS_PATH", tmp_path / "no_roads.json")
+    monkeypatch.setattr(features_mod, "CAMERAS_PATH", tmp_path / "no_cameras.json")
+    monkeypatch.setattr(features_mod, "SIGNALS_PATH", tmp_path / "no_signals.json")
+    monkeypatch.setattr(features_mod, "POPULATION_PATH", tmp_path / "no_population.json")
+    monkeypatch.setattr(pois_mod, "_index", pois_mod.POIIndex([]))
     reset_grid()
     reset_layers()
+    reset_features()
     yield
     reset_grid()
     reset_layers()
+    reset_features()
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +56,23 @@ def _no_article_fetching(monkeypatch):
 
     settings = config.get_settings()
     monkeypatch.setattr(settings, "fetch_article_bodies", False, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_archive(tmp_path, monkeypatch):
+    """Never let a test append to the real news archive or its logs.
+
+    Any test that runs the whole graph reaches `node_persist`, which appends to
+    all three. Those files cannot be regenerated, and a test row in them is
+    indistinguishable from a real incident a year later.
+    """
+    import app.agent.archive as archive_mod
+
+    archive_dir = tmp_path / "archive"
+    monkeypatch.setattr(archive_mod, "ARCHIVE_PATH", archive_dir / "nsi_archive.jsonl")
+    monkeypatch.setattr(archive_mod, "REVIEW_LOG_PATH", archive_dir / "news_reviewed.jsonl")
+    monkeypatch.setattr(archive_mod, "RUN_LOG_PATH", archive_dir / "agent_runs.jsonl")
     yield
 
 

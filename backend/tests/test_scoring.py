@@ -211,6 +211,47 @@ def test_ranking_prefers_safety_then_distance():
     assert ranked[-1].css == 0.5
 
 
+def test_a_negligible_score_edge_does_not_buy_a_longer_route():
+    """0.676 vs 0.668 once recommended a route 3.7 km longer, under a sentence
+    calling it "simply the shorter one"."""
+    from app.explain import compare
+
+    longer = _route(0.676, 14_400)
+    shorter = _route(0.668, 10_700)
+    ranked = rank_routes([longer, shorter])
+
+    assert ranked[0] is shorter
+    assert "shorter one (10.7 km)" in compare(ranked[0], ranked[1])
+
+
+def test_fastest_and_safest_are_named_and_traded_off():
+    from app.explain import fastest_and_safest, tradeoff
+
+    quick = _route(0.55, 2000)
+    quick.duration_s = 600
+    safe = _route(0.75, 2600)
+    safe.duration_s = 840
+    fastest, safest = fastest_and_safest([safe, quick])
+
+    assert fastest is quick and safest is safe
+    text = tradeoff(fastest, safest)
+    assert text.startswith("The safest route takes 4 min longer than the fastest")
+    assert "0.75 against 0.55" in text
+
+
+def test_tradeoff_when_one_route_is_both():
+    from app.explain import tradeoff
+
+    only = _route(0.7, 1000)
+    assert tradeoff(only, only) == "The fastest route is also the safest one for this trip."
+
+
+def test_a_real_safety_gap_still_wins_over_distance():
+    safer = _route(0.80, 3000)
+    ranked = rank_routes([_route(0.60, 1000), safer])
+    assert ranked[0] is safer
+
+
 def test_worst_stretch_ignores_a_single_bad_sample(grid, layers, night):
     segs = [
         score_segment((28.6139, 77.2090), (28.6140, 77.2091), night, DEFAULT_WEIGHTS, layers, grid)

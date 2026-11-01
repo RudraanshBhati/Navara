@@ -5,11 +5,15 @@ articles a week — so an uncached geocoder would burn the quota re-resolving th
 same twenty place names forever. The cache is a plain JSON file; at this scale
 anything more is overhead.
 
-Results are biased to the Delhi bounding box and filtered to it afterwards.
-Both are needed: `bounds` is only a hint to Google, and without the explicit
-post-filter a story about Delhi, Ontario or a "New Delhi restaurant" in another
-city will happily geocode to somewhere outside the grid and then be silently
-dropped by the NSI indexer with no explanation of why.
+Results are biased to the Delhi NCR service area and filtered to it
+afterwards. Both are needed: `bounds` is only a hint to Google, and without the
+explicit post-filter a story about Delhi, Ontario or a "New Delhi restaurant"
+in another city will happily geocode to somewhere else entirely.
+
+NCR rather than just the Delhi grid, because the archive is a record for later
+as well as an input now: an incident in Gurugram cannot move a score until the
+grid reaches Gurugram, but it is still a located, dated incident, and it will
+not be in the feeds any more by the time the grid gets there.
 """
 
 from __future__ import annotations
@@ -20,13 +24,17 @@ from dataclasses import dataclass
 
 import httpx
 
-from ..config import DELHI_BBOX, PROCESSED_DIR, get_settings
+from ..config import PROCESSED_DIR, SERVICE_BBOX, get_settings
 
 log = logging.getLogger(__name__)
 
 CACHE_PATH = PROCESSED_DIR / "geocode_cache.json"
 
-MIN_LON, MIN_LAT, MAX_LON, MAX_LAT = DELHI_BBOX
+MIN_LON, MIN_LAT, MAX_LON, MAX_LAT = SERVICE_BBOX
+
+#: A location naming one of these is searched as written; anything else is
+#: assumed to be in Delhi, which is where most of the feeds report from.
+NCR_CITIES = ("delhi", "gurugram", "gurgaon", "noida", "ghaziabad", "faridabad")
 
 
 @dataclass
@@ -67,7 +75,7 @@ class Geocoder:
         CACHE_PATH.write_text(json.dumps(self._cache, indent=2), encoding="utf-8")
 
     def geocode(self, place: str) -> GeoResult | None:
-        """Resolve a place name inside Delhi, or None."""
+        """Resolve a place name inside Delhi NCR, or None."""
         key = _normalise(place)
         if not key:
             return None
@@ -88,11 +96,14 @@ class Geocoder:
             log.warning("GOOGLE_MAPS_API_KEY not set; cannot geocode %r", place)
             return None
 
-        query = place if "delhi" in place.lower() else f"{place}, Delhi, India"
+        lowered = place.lower()
+        query = place if any(c in lowered for c in NCR_CITIES) else f"{place}, Delhi, India"
         params = {
             "address": query,
             "key": settings.google_maps_api_key,
-            "components": "country:IN|administrative_area:Delhi",
+            # No administrative_area: NCR spans Delhi, Haryana and Uttar
+            # Pradesh, and the bbox post-filter below does the bounding.
+            "components": "country:IN",
             "bounds": f"{MIN_LAT},{MIN_LON}|{MAX_LAT},{MAX_LON}",
         }
         try:
@@ -113,7 +124,7 @@ class Geocoder:
         lon = geom["location"]["lng"]
 
         if not (MIN_LAT <= lat <= MAX_LAT and MIN_LON <= lon <= MAX_LON):
-            log.info("geocode for %r landed outside Delhi (%.4f, %.4f)", place, lat, lon)
+            log.info("geocode for %r landed outside Delhi NCR (%.4f, %.4f)", place, lat, lon)
             return None
 
         return GeoResult(

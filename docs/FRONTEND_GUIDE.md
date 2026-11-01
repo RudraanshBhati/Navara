@@ -149,7 +149,36 @@ Response (trimmed to one route and two segments):
 }
 ```
 
-Routes come back **already sorted safest-first**. Don't re-sort them.
+Routes come back **already ranked**: the recommended route first (the shortest
+of those scoring within 0.02 of the best — closer than that is a tie), then the
+rest safest-first. Don't re-sort them.
+
+Each route also has `fastest` and `safest` flags (exactly one of each), and
+the response has a `tradeoff` sentence comparing those two — what the safer
+route costs in time and what it buys. Use them for a "Safest / Fastest"
+choice; render `tradeoff` as given.
+
+Send `"travel_mode": "walk" | "two_wheeler" | "drive"` (default `walk`). It
+changes the routes Google returns and the weights: road type counts most for a
+car, open places and crowd most on foot. Each route also carries `highlights`
+(short factual lines for the route card), `main_road_share`, `longest_gap` (the
+longest stretch with no mapped place open — draw it) and `open_places` (pins
+along the route).
+
+Each route's `facts` is what its card shows, as `{key, value, label, text}`:
+lay out `value` and `label` as a stat and use `text` where a sentence fits.
+These route facts sit beside the score and never enter it:
+`longest_isolated` (the longest stretch with no detected homes and no mapped
+place), `farthest_help` (where the route is farthest in a straight line from a
+police station, hospital or petrol pump likely open, and which one) and
+`cameras` (mapped outdoor CCTV within 50 m) and `signals` (one point per mapped
+signalled junction; two-wheeler and car only). OSM's cameras are concentrated in
+a few areas, so an empty `cameras` or `signals` means none are mapped; never
+present it as a lack of them.
+
+Each route also has `departure_options` (the same route scored at nearby times,
+earliest first, past times omitted, one marked `current`) and `departure_note`,
+a sentence on what changing time would do. Render it as given.
 
 **`worst_stretch.reason` can be `null`.** It names the layer to blame, but only
 when a layer that actually holds data for those cells can be blamed. When the
@@ -169,6 +198,21 @@ routing provider fails. Both carry a human-readable `detail` string — show it.
 
 Which layers are real, the grid dimensions, and whether routing is live. Call it
 on load; if `warnings` is non-empty, put a banner up.
+
+### `GET /places/autocomplete?q=&session=&lat=&lng=` and `GET /places/{place_id}`
+
+Search-as-you-type for Delhi NCR, and the coordinates for a chosen suggestion.
+Misspellings are tolerated. `lat`/`lng` add a `distance_m` to each suggestion;
+`kind` (`police`, `hospital`, `transit`, `food`, `shop`, `place`) picks the icon.
+Pass one random `session` for all the keystrokes of a search and the final
+lookup — Google bills that as one session.
+
+### `GET /pois?bbox=&categories=&limit=`
+
+Hospitals, police, metro, bus stops, shops and more from OpenStreetMap, for the
+visible map. Over `limit`, the safety-relevant categories are kept first and
+`truncated` is true. Built by `scripts/fetch_map_pois.py`; display only — it
+never feeds a score.
 
 ### `GET /cell?lat=&lng=&at=`
 

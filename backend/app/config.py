@@ -6,6 +6,7 @@ Copy `backend/.env.example` to `backend/.env` and fill it in.
 
 from __future__ import annotations
 
+from datetime import timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -45,6 +46,8 @@ class Settings(BaseSettings):
     # --- Routing ---
     routes_api_url: str = "https://routes.googleapis.com/directions/v2:computeRoutes"
     geocoding_api_url: str = "https://maps.googleapis.com/maps/api/geocode/json"
+    places_autocomplete_url: str = "https://places.googleapis.com/v1/places:autocomplete"
+    places_details_url: str = "https://places.googleapis.com/v1/places"
     max_alternatives: int = 3
     # Distance between sampled points when cutting a polyline into scoreable segments.
     segment_length_m: float = 100.0
@@ -165,6 +168,25 @@ def get_settings() -> Settings:
 # fall off the edge of the grid.
 DELHI_BBOX = (76.8388, 28.4041, 77.3464, 28.8834)  # (min_lon, min_lat, max_lon, max_lat)
 
+# Where a route may start or end, and what place search and the news geocoder
+# accept: Delhi plus 0.2 degrees on every side, which takes in Gurugram, Noida,
+# Greater Noida, Ghaziabad and Faridabad. Wider than the grid on purpose. A
+# route out to Gurugram is still worth drawing; the part of it beyond the grid
+# simply has no layer data, and `coverage` says so rather than hiding it.
+SERVICE_BBOX = (
+    DELHI_BBOX[0] - 0.2,
+    DELHI_BBOX[1] - 0.2,
+    DELHI_BBOX[2] + 0.2,
+    DELHI_BBOX[3] + 0.2,
+)
+
+# Every time-of-day curve in the model (lighting, crowd, crime-by-hour) is in
+# Delhi local hours. Requests arrive in whatever zone the client sent, usually
+# UTC, and reading `.hour` off a UTC timestamp shifts every curve by 5.5 hours:
+# 8pm in Delhi is 14:30 UTC, which the lighting layer took for afternoon and
+# ignored. India has a single zone and no DST, so a fixed offset is exact.
+DELHI_TZ = timezone(timedelta(hours=5, minutes=30), "IST")
+
 # See docs/ARCHITECTURE.md for why 500 m: ~6k cells over Delhi, which is small
 # enough to hold in memory and coarse enough that crime counts per cell are not
 # hopelessly sparse.
@@ -197,14 +219,64 @@ CELL_SIZE_M = 500.0
 #              is not validated by any paper we found. Tiebreaker only until it
 #              earns more.
 #
+# Two street-level terms sit beside the five layers (app/features.py): what
+# road a segment is on, and what is open within 75 m of it at this hour. They
+# took weight from the five above, and the split now depends on how you travel:
+#
+#                  walk   two-wheeler   car
+#   CIP            0.25      0.25      0.25
+#   NTLS           0.20      0.20      0.15
+#   NSI            0.15      0.15      0.15
+#   TRC            0.10      0.10      0.10
+#   CDS            0.10      0.05      0.05
+#   ACT  open      0.12      0.10      0.10
+#   ROAD type      0.08      0.15      0.20
+#
+# The reasoning, which is judgement and untuned like everything here: someone
+# on foot is among the people and places around them, so crowd and open places
+# carry most for walking. A rider or driver passes through in seconds; what
+# matters is where they would be stopped — a breakdown, a red light, a wrong
+# turn — and a main road is lit, patrolled and busy at every hour where an
+# internal lane often is none of those. Riders are more exposed than drivers
+# (snatching from two-wheelers is a common Delhi pattern), so lighting holds
+# for them. The relative order of the five layers is unchanged within a mode.
+#
 # Tune against ground truth (Safetipin's Delhi audit) rather than by intuition.
-DEFAULT_WEIGHTS: dict[str, float] = {
-    "cip": 0.30,  # crime incidence
-    "ntls": 0.25,  # night-time lighting
-    "nsi": 0.20,  # news signal (agent)
-    "trc": 0.15,  # time risk coefficient
-    "cds": 0.10,  # crowd density proxy
+MODE_WEIGHTS: dict[str, dict[str, float]] = {
+    "walk": {
+        "cip": 0.25,
+        "ntls": 0.20,
+        "nsi": 0.15,
+        "trc": 0.10,
+        "cds": 0.10,
+        "act": 0.12,
+        "road": 0.08,
+    },
+    "two_wheeler": {
+        "cip": 0.25,
+        "ntls": 0.20,
+        "nsi": 0.15,
+        "trc": 0.10,
+        "cds": 0.05,
+        "act": 0.10,
+        "road": 0.15,
+    },
+    "drive": {
+        "cip": 0.25,
+        "ntls": 0.15,
+        "nsi": 0.15,
+        "trc": 0.10,
+        "cds": 0.05,
+        "act": 0.10,
+        "road": 0.20,
+    },
 }
+TRAVEL_MODES = tuple(MODE_WEIGHTS)
+
+DEFAULT_WEIGHTS: dict[str, float] = MODE_WEIGHTS["walk"]
+
+#: Terms computed per route segment rather than per grid cell.
+STREET_TERMS = ("act", "road")
 
 # Human-readable flag text, used by the explanation layer when a term is the
 # dominant contributor to a segment's low score.
@@ -214,6 +286,8 @@ LAYER_FLAGS: dict[str, str] = {
     "trc": "this time of day carries higher risk here",
     "ntls": "poorly lit stretch",
     "nsi": "recent incident reported nearby",
+    "act": "no mapped place open nearby at this hour",
+    "road": "small internal road",
 }
 
 LAYER_LABELS: dict[str, str] = {
@@ -222,11 +296,18 @@ LAYER_LABELS: dict[str, str] = {
     "trc": "Time-of-day risk",
     "ntls": "Lighting",
     "nsi": "Recent news",
+    "act": "Open places nearby",
+    "road": "Road type",
 }
+
+#: Confidence of the street-level terms, as the layers carry for themselves.
+#: "Open places" rests on OSM, whose shop coverage is patchy and whose opening
+#: hours exist for 8% of places — the rest are assumed from the category.
+STREET_TERM_CONFIDENCE = {"act": "low", "road": "medium"}
 
 
 def validate_weights(weights: dict[str, float]) -> dict[str, float]:
-    """Check the weight vector covers every layer and sums to 1."""
+    """Check the weight vector covers every term and sums to 1."""
     missing = set(DEFAULT_WEIGHTS) - set(weights)
     if missing:
         raise ValueError(f"weights missing layers: {sorted(missing)}")

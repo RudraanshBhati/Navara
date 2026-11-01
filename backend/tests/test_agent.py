@@ -152,6 +152,65 @@ def test_quiet_day_skips_extraction_but_still_runs(processed_dir, monkeypatch):
     assert "persisted" in state["stats"]
 
 
+def test_every_run_is_logged_even_a_quiet_one(processed_dir, monkeypatch):
+    """A missing run must be distinguishable from a quiet news day."""
+    import app.data.nsi as nsi_mod
+    from app.agent.archive import load_runs
+    from app.agent.graph import run_agent
+
+    monkeypatch.setattr(nsi_mod, "INCIDENTS_PATH", processed_dir / "nsi_incidents.json")
+
+    run_agent(sources=[FakeSource([_article("Metro timetable update", "u1")])])
+    run_agent(sources=[FakeSource([])])
+
+    runs = load_runs()
+    assert len(runs) == 2
+    assert runs[0]["stats"]["fetched"] == 1
+    assert "fake: returned 0 articles" in runs[1]["errors"][0]
+
+
+def test_articles_that_never_become_incidents_are_still_recorded(processed_dir, monkeypatch):
+    """A safety story with only a district for a location used to leave no trace."""
+    import app.agent.graph as graph
+    import app.data.nsi as nsi_mod
+    from app.agent.archive import REVIEW_LOG_PATH, load_archive
+    from app.agent.extract import ExtractedIncident
+
+    monkeypatch.setattr(nsi_mod, "INCIDENTS_PATH", processed_dir / "nsi_incidents.json")
+
+    vague = _article("Woman harassed in South Delhi", "u-vague")
+    unread = _article("Man stabbed, police say", "u-failed")
+
+    def fake_extract(articles):
+        return [
+            (
+                vague,
+                ExtractedIncident(
+                    is_safety_incident=True,
+                    category="harassment",
+                    location_text="South Delhi",
+                    confidence=0.6,
+                    night_time=False,
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(graph, "extract_batch", fake_extract)
+    graph.run_agent(sources=[FakeSource([vague, unread])])
+
+    import json
+
+    rows = {
+        r["url"]: r
+        for r in map(json.loads, REVIEW_LOG_PATH.read_text(encoding="utf-8").splitlines())
+    }
+    assert rows["u-vague"]["outcome"] == "location_too_coarse"
+    assert rows["u-vague"]["category"] == "harassment"
+    assert rows["u-failed"]["outcome"] == "extract_failed"
+    assert rows["u-failed"]["source_text"]
+    assert load_archive() == {}  # neither is an incident
+
+
 def test_graph_compiles_with_every_node_reachable():
     from app.agent.graph import build_graph
 

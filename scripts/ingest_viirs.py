@@ -1,14 +1,19 @@
 """Build the NTLS layer from VIIRS night-lights granules.
 
     uv pip install -e ".[raster]"                       # rasterio is an optional extra
-    python scripts/download_viirs.py --nights 12        # fetch granules
-    python scripts/ingest_viirs.py backend/data/raw/VNP46A2*.h5
+    python scripts/download_viirs.py                    # 12 monthly composites
+    python scripts/ingest_viirs.py backend/data/raw/VNP46A3*.h5
 
 Samples radiance at each grid cell centre, takes the **median across every
-granule given**, and normalises. Not inverted: brighter is safer.
+granule given**, and normalises. Not inverted: brighter is safer. Monthly
+composites (VNP46A3) carry a quality flag; samples it marks as gap-filled or
+built from three nights or fewer are dropped before the median.
 
-PASS MANY NIGHTS, NOT ONE
--------------------------
+Do not mix products in one run: monthly and nightly radiance are on
+different footings, and a median across both means nothing.
+
+PASS MANY GRANULES, NOT ONE
+---------------------------
 One night's raster carries cloud shadow and moonlight variation, and a dark
 patch from a passing cloud is indistinguishable from an unlit street. The
 per-cell median across a dozen nights makes that transient rather than
@@ -45,26 +50,45 @@ from app.data.base import normalise  # noqa: E402
 from app.data.ntls import NTLSLayer  # noqa: E402
 from app.grid import get_grid  # noqa: E402
 
-#: Preferred subdataset, then the fallback. The gap-filled product has already
-#: had cloud-contaminated retrievals interpolated over, which is why it is
-#: first; the raw BRDF-corrected band is usable but leaves holes.
-SUBDATASET_KEYS = ("Gap_Filled_DNB_BRDF-Corrected_NTL", "DNB_BRDF-Corrected_NTL")
+#: Radiance subdatasets in order of preference; a granule holds only its own
+#: product's. Nightly VNP46A2: the gap-filled band has had cloud-contaminated
+#: retrievals interpolated over, the raw band leaves holes. Monthly VNP46A3:
+#: the near-nadir snow-free composite, which is what NASA's own tools default
+#: to — off-nadir views stretch a pixel and smear bright roads into dark lanes.
+SUBDATASET_KEYS = (
+    "Gap_Filled_DNB_BRDF-Corrected_NTL",
+    "DNB_BRDF-Corrected_NTL",
+    "NearNadir_Composite_Snow_Free",
+)
+
+#: radiance subdataset -> (its quality subdataset, the flag values to keep).
+#: For the monthly composite: 0 = more than three clear nights went in,
+#: 1 = three or fewer, 2 = gap-filled from history. Only 0 is kept. A
+#: gap-filled pixel in a monsoon month is an older month's value wearing this
+#: month's date, and the median across the year is better off without it.
+QUALITY_KEYS: dict[str, tuple[str, frozenset[int]]] = {
+    "NearNadir_Composite_Snow_Free": ("NearNadir_Composite_Snow_Free_Quality", frozenset({0})),
+}
 
 
-def resolve_source(path: Path) -> str:
-    """Return something rasterio can open — an HDF5 subdataset, or the path."""
+def resolve_source(path: Path) -> tuple[str, tuple[str, frozenset[int]] | None]:
+    """What rasterio should open — an HDF5 subdataset, or the path — plus the
+    quality subdataset and kept flag values, when the product has one."""
     if path.suffix.lower() not in (".h5", ".hdf5", ".he5"):
-        return str(path)
+        return str(path), None
 
     import rasterio
 
     with rasterio.open(path) as container:
         subs = container.subdatasets
+    by_name = {sub.rsplit("/", 1)[-1]: sub for sub in subs}
 
     for key in SUBDATASET_KEYS:
-        for sub in subs:
-            if sub.rsplit("/", 1)[-1] == key:
-                return sub
+        if key in by_name:
+            quality = QUALITY_KEYS.get(key)
+            if quality and quality[0] in by_name:
+                return by_name[key], (by_name[quality[0]], quality[1])
+            return by_name[key], None
 
     raise SystemExit(
         f"{path.name}: no night-lights subdataset found.\n"
@@ -73,8 +97,16 @@ def resolve_source(path: Path) -> str:
     )
 
 
-def sample(source: str, cell_ids: list[str], lats, lons, band_index: int) -> dict[str, float]:
-    """Radiance at each cell centre for one granule."""
+def sample(
+    source: str,
+    cell_ids: list[str],
+    lats,
+    lons,
+    band_index: int,
+    quality: tuple[str, frozenset[int]] | None = None,
+) -> tuple[dict[str, float], int]:
+    """Radiance at each cell centre for one granule, and how many cells the
+    quality flag rejected."""
     import numpy as np
     import rasterio
     from rasterio.warp import transform as warp_transform
@@ -89,14 +121,25 @@ def sample(source: str, cell_ids: list[str], lats, lons, band_index: int) -> dic
 
         rows, cols = rasterio.transform.rowcol(src.transform, xs, ys)
 
+    flags = None
+    if quality is not None:
+        with rasterio.open(quality[0]) as qsrc:
+            flags = qsrc.read(1)
+    keep = quality[1] if quality else frozenset()
+
     out: dict[str, float] = {}
+    rejected = 0
     for cell_id, r, c in zip(cell_ids, rows, cols, strict=True):
         if not (0 <= r < band.shape[0] and 0 <= c < band.shape[1]):
             continue
         value = band[r, c]
-        if not np.ma.is_masked(value):
-            out[cell_id] = float(value)
-    return out
+        if np.ma.is_masked(value):
+            continue
+        if flags is not None and int(flags[r, c]) not in keep:
+            rejected += 1
+            continue
+        out[cell_id] = float(value)
+    return out, rejected
 
 
 def main() -> int:
@@ -134,11 +177,12 @@ def main() -> int:
 
     per_cell: dict[str, list[float]] = {}
     used = 0
+    total_rejected = 0
 
     for path in paths:
         try:
-            source = resolve_source(path)
-            values = sample(source, list(cell_ids), lats, lons, args.band)
+            source, quality = resolve_source(path)
+            values, rejected = sample(source, list(cell_ids), lats, lons, args.band, quality)
         except ImportError:
             print("rasterio is not installed. It is an optional extra:")
             print('  uv pip install -e ".[raster]"')
@@ -148,13 +192,19 @@ def main() -> int:
             continue
 
         if not values:
-            print(f"  skip {path.name}: no cells sampled — does it cover Delhi?")
+            if rejected:
+                # Monsoon months over Delhi routinely lose every pixel here.
+                print(f"  skip {path.name}: all {rejected:,} cells failed the quality flag (cloud)")
+            else:
+                print(f"  skip {path.name}: no cells sampled — does it cover Delhi?")
             continue
 
         for cell_id, v in values.items():
             per_cell.setdefault(cell_id, []).append(v)
         used += 1
-        print(f"  {path.name}  ->  {len(values):,} cells")
+        total_rejected += rejected
+        dropped = f", {rejected:,} dropped on quality flag" if quality else ""
+        print(f"  {path.name}  ->  {len(values):,} cells{dropped}")
 
     if not per_cell:
         print("\nNo cells sampled from any granule. Check that these cover Delhi.")
@@ -171,12 +221,13 @@ def main() -> int:
             "granules": [p.name for p in paths[:20]],
             "granule_count": used,
             "cells": len(values),
+            "quality_rejected_samples": total_rejected,
         },
     )
 
     depth = statistics.median(len(v) for v in per_cell.values())
     print(f"\nWrote {layer.path}")
-    print(f"  {len(values):,} of {grid.n_cells:,} cells, median {depth:.0f} night(s) per cell")
+    print(f"  {len(values):,} of {grid.n_cells:,} cells, median {depth:.0f} granule(s) per cell")
     print(f"  raw radiance range: {min(raw.values()):.2f} .. {max(raw.values()):.2f}")
     if used == 1:
         print("\n  Built from a single night — see the warning above.")

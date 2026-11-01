@@ -34,7 +34,12 @@ log = logging.getLogger(__name__)
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
-#: Delhi city-desk RSS feeds. Add to this list freely — the pipeline dedupes.
+#: Delhi NCR city-desk RSS feeds. Add to this list freely — the pipeline
+#: dedupes. Each was checked to return items in October 2026; a feed that goes
+#: dead returns zero entries rather than an error, so check `per_source` in the
+#: run log rather than trusting that a listed feed is a working one. (NDTV's
+#: feedburner feed was dropped for exactly that reason. TOI's Ghaziabad and
+#: Faridabad feed ids and HT's Ghaziabad/Faridabad paths returned nothing.)
 DELHI_RSS_FEEDS: list[tuple[str, str]] = [
     ("TOI Delhi", "https://timesofindia.indiatimes.com/rssfeeds/-2128839596.cms"),
     (
@@ -42,8 +47,20 @@ DELHI_RSS_FEEDS: list[tuple[str, str]] = [
         "https://www.hindustantimes.com/feeds/rss/cities/delhi-news/rssfeed.xml",
     ),
     ("Indian Express Delhi", "https://indianexpress.com/section/cities/delhi/feed/"),
-    ("NDTV Cities", "https://feeds.feedburner.com/ndtvnews-cities"),
+    ("TOI Gurgaon", "https://timesofindia.indiatimes.com/rssfeeds/6547154.cms"),
+    ("TOI Noida", "https://timesofindia.indiatimes.com/rssfeeds/8021716.cms"),
+    (
+        "Hindustan Times Gurugram",
+        "https://www.hindustantimes.com/feeds/rss/cities/gurugram-news/rssfeed.xml",
+    ),
+    (
+        "Hindustan Times Noida",
+        "https://www.hindustantimes.com/feeds/rss/cities/noida-news/rssfeed.xml",
+    ),
 ]
+
+#: The NCR place names the search sources query for.
+NCR_QUERY = "(Delhi OR Gurugram OR Gurgaon OR Noida OR Ghaziabad OR Faridabad)"
 
 #: Terms that make an article worth spending an LLM call on. This is a cheap
 #: pre-filter, not the real classifier — the extraction step does the actual
@@ -147,7 +164,8 @@ class GDELTSource(NewsSource):
             # GDELT's query language: quoted phrase + a location filter. The
             # sourcecountry filter keeps out the steady trickle of "Delhi" in
             # foreign wire copy about national politics.
-            "query": "(Delhi) (crime OR assault OR robbery OR snatching OR harassment) sourcecountry:india",
+            "query": f"{NCR_QUERY} (crime OR assault OR robbery OR snatching OR harassment) "
+            "sourcecountry:india",
             "mode": "ArtList",
             "maxrecords": "150",
             "format": "json",
@@ -276,7 +294,7 @@ class NewsAPISource(NewsSource):
 
         since = datetime.now(UTC) - timedelta(hours=lookback_hours)
         params = {
-            "q": "Delhi AND (crime OR assault OR robbery OR snatching OR harassment)",
+            "q": f"{NCR_QUERY} AND (crime OR assault OR robbery OR snatching OR harassment)",
             "from": since.strftime("%Y-%m-%dT%H:%M:%S"),
             "language": "en",
             "sortBy": "publishedAt",

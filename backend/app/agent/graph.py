@@ -32,7 +32,8 @@ from langgraph.graph import END, START, StateGraph
 from ..config import get_settings
 from ..data.base import severity_of
 from ..data.nsi import Incident, NSILayer
-from .archive import append_incidents
+from ..grid import get_grid
+from .archive import append_incidents, append_reviews, append_run
 from .extract import ExtractedIncident, extract_batch, is_too_coarse
 from .fetch import ArticleFetcher
 from .geocode import Geocoder
@@ -67,6 +68,9 @@ class NewsAgentState(TypedDict, total=False):
     #: Everything worth keeping permanently — a superset of `incidents`, which
     #: only ever holds the live window. See node_merge.
     archivable: list[Incident]
+    #: url -> what happened to every article the extractor read, including the
+    #: ones that never became incidents. Written to the review log at persist.
+    reviews: dict[str, dict]
 
     stats: Annotated[dict, _merge_stats]
     errors: list[str]
@@ -187,12 +191,17 @@ def node_extract(state: NewsAgentState) -> dict:
     if not articles:
         return {"extracted": [], "stats": {"extracted": 0}}
 
+    # Every article starts as a failed extraction and is upgraded below, so one
+    # the model never answered for is still on record as having been read.
+    reviews = {a.url: _review(a, "extract_failed") for a in articles}
+
     try:
         paired = extract_batch(articles)
     except Exception as exc:  # noqa: BLE001
         log.error("extraction stage failed: %s", exc)
         return {
             "extracted": [],
+            "reviews": reviews,
             "errors": state.get("errors", []) + [f"extract: {exc}"],
             "stats": {"extracted": 0},
         }
@@ -200,14 +209,27 @@ def node_extract(state: NewsAgentState) -> dict:
     incidents_only: list[tuple[Article, ExtractedIncident]] = []
     coarse = 0
     for article, ex in paired:
+        review = reviews[article.url]
+        review.update(
+            is_safety_incident=ex.is_safety_incident,
+            category=ex.category,
+            location_text=ex.location_text,
+            occurred_at=ex.occurred_at,
+            confidence=ex.confidence,
+            night_time=ex.night_time,
+            note=ex.note,
+        )
         if not ex.is_safety_incident:
+            review["outcome"] = "not_incident"
             continue
         if is_too_coarse(ex.location_text):
             # Counted rather than silently dropped: a run where most incidents
             # fail this check means bodies are not being fetched, not that Delhi
             # stopped naming streets.
+            review["outcome"] = "location_too_coarse"
             coarse += 1
             continue
+        review["outcome"] = "located"
         incidents_only.append((article, ex))
 
     log.info(
@@ -218,6 +240,7 @@ def node_extract(state: NewsAgentState) -> dict:
     )
     return {
         "extracted": incidents_only,
+        "reviews": reviews,
         "stats": {
             "extracted": len(paired),
             "located_incidents": len(incidents_only),
@@ -232,12 +255,16 @@ def node_geocode(state: NewsAgentState) -> dict:
         return {"incidents": [], "stats": {"geocoded": 0}}
 
     geocoder = Geocoder()
+    grid = get_grid()
+    reviews = state.get("reviews", {})
     incidents: list[Incident] = []
-    misses = 0
+    misses = outside_grid = 0
 
     for article, ex in extracted:
+        review = reviews.get(article.url, {})
         geo = geocoder.geocode(ex.location_text)
         if geo is None:
+            review["outcome"] = "geocode_miss"
             misses += 1
             continue
 
@@ -270,11 +297,35 @@ def node_geocode(state: NewsAgentState) -> dict:
             )
         )
 
+        # The geocoder accepts all of Delhi NCR but the grid covers Delhi only.
+        # An incident in Gurugram is archived like any other; it just cannot
+        # move a score until the grid reaches it.
+        in_grid = grid.row_col(geo.lat, geo.lon) is not None
+        outside_grid += not in_grid
+        review.update(
+            outcome="incident",
+            incident_id=incidents[-1].id,
+            geocoded_as=geo.formatted,
+            lat=geo.lat,
+            lon=geo.lon,
+            in_grid=in_grid,
+        )
+
     geocoder.save_cache()
-    log.info("geocoded %d incidents (%d misses)", len(incidents), misses)
+    log.info(
+        "geocoded %d incidents (%d misses, %d outside the Delhi grid)",
+        len(incidents),
+        misses,
+        outside_grid,
+    )
     return {
         "incidents": incidents,
-        "stats": {"geocoded": len(incidents), "geocode_misses": misses},
+        "reviews": reviews,
+        "stats": {
+            "geocoded": len(incidents),
+            "geocode_misses": misses,
+            "outside_grid": outside_grid,
+        },
     }
 
 
@@ -338,12 +389,13 @@ def node_persist(state: NewsAgentState) -> dict:
         log.info("dry run — not writing %d incidents", len(state.get("incidents", [])))
         return {"stats": {"persisted": 0, "dry_run": True}}
 
+    run_at = datetime.now(UTC).isoformat()
     incidents = state.get("incidents", [])
     layer = NSILayer()
     layer.save_incidents(
         incidents,
         meta={
-            "run_at": datetime.now(UTC).isoformat(),
+            "run_at": run_at,
             "stats": state.get("stats", {}),
             "errors": state.get("errors", []),
         },
@@ -351,18 +403,40 @@ def node_persist(state: NewsAgentState) -> dict:
     log.info("persisted %d incidents to %s", len(incidents), layer.path)
 
     # Failing to archive must not fail the run: the live layer is already
-    # written and serving, and the next run re-appends anything missed.
-    archive_stats: dict = {}
-    try:
-        archive_stats = append_incidents(state.get("archivable", incidents))
-    except OSError as exc:
-        log.error("archive append failed: %s", exc)
-        return {
-            "errors": state.get("errors", []) + [f"archive: {exc}"],
-            "stats": {"persisted": len(incidents)},
-        }
+    # written and serving, and the next run re-appends anything missed. Each
+    # write is attempted even if an earlier one failed.
+    errors = list(state.get("errors", []))
+    stats: dict = {"persisted": len(incidents)}
+    reviews = [{**r, "reviewed_at": run_at} for r in state.get("reviews", {}).values()]
 
-    return {"stats": {"persisted": len(incidents), **archive_stats}}
+    for name, write in (
+        ("archive", lambda: append_incidents(state.get("archivable", incidents))),
+        ("review log", lambda: append_reviews(reviews)),
+    ):
+        try:
+            stats.update(write())
+        except OSError as exc:
+            log.error("%s append failed: %s", name, exc)
+            errors.append(f"{name}: {exc}")
+
+    settings = get_settings()
+    provider = settings.extraction_provider.strip().lower()
+    try:
+        append_run(
+            {
+                "run_at": run_at,
+                "lookback_hours": state.get("lookback_hours"),
+                "extractor": f"{provider}:"
+                + (settings.ollama_model if provider == "ollama" else settings.news_model),
+                "stats": {**state.get("stats", {}), **stats},
+                "errors": errors,
+            }
+        )
+    except OSError as exc:
+        log.error("run log append failed: %s", exc)
+        errors.append(f"run log: {exc}")
+
+    return {"errors": errors, "stats": stats}
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +489,7 @@ def run_agent(
         "extracted": [],
         "incidents": [],
         "archivable": [],
+        "reviews": {},
         "stats": {},
         "errors": [],
     }
@@ -470,6 +545,19 @@ def _resolve_occurred_at(stated: str, published: datetime) -> datetime:
         except ValueError:
             pass
     return published if published.tzinfo else published.replace(tzinfo=UTC)
+
+
+def _review(article: Article, outcome: str) -> dict:
+    """The review-log row for one article, before extraction fills it in."""
+    return {
+        "url": article.url,
+        "headline": article.title,
+        "source": article.source,
+        "published_at": article.published_at.isoformat(),
+        "had_body": article.has_body,
+        "outcome": outcome,
+        "source_text": article.text[:ARCHIVE_TEXT_CHARS],
+    }
 
 
 def _incident_id(url: str, location: str, occurred: datetime) -> str:

@@ -1,8 +1,43 @@
-# NAVARA frontend — not built yet
+# NAVARA frontend
 
-**This directory is intentionally empty.** Nothing here has been written, so
-there is nothing to work around, argue with, or refactor. Whoever picks up the
-frontend owns every decision in it.
+A Google-Maps-style interface for Delhi NCR: search with typo correction and
+suggestions, police / hospitals / metro / bus stops / shops on the map,
+place cards, and walking directions where every alternative is coloured by
+safety and explained by the backend. React + Vite + Leaflet, no keys needed.
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173, expects the backend on :8000
+```
+
+Places on the map come from OpenStreetMap; build them once on the backend:
+
+```bash
+cd backend
+uv run python ../scripts/fetch_map_pois.py    # ~2 min, writes data/processed/map_pois.json
+uv run python ../scripts/fetch_roads.py       # ~1 min, main roads for the road-type term
+uv run python ../scripts/fetch_cameras.py     # mapped CCTV near routes
+uv run python ../scripts/fetch_signals.py     # mapped traffic signals, for riders and drivers
+```
+
+How the pieces fit:
+
+| Feature | Where it comes from |
+|---|---|
+| Base map | [OpenFreeMap](https://openfreemap.org) "Liberty" vector style via MapLibre, inside Leaflet. Free, no key |
+| Search, typo correction | `GET /places/autocomplete` — Google Places when the backend has a key, fuzzy offline search over landmarks and OSM places when not |
+| Suggestions before typing | Your location (if shared) and recent places, kept in this browser's `localStorage` |
+| Places on the map | `GET /pois` for the visible area. More appear as you zoom in; overlapping markers are thinned, police and hospitals kept first |
+| Directions | `POST /routes` with `travel_mode` — Walking, Two-wheeler or Car. A Safest / Fastest switch picks between the two, with the backend's `tradeoff` sentence under it; or click any route card, grey line or duration bubble. Departure chips (Now, 9 PM, 11 PM, 1 AM) make night trips one tap |
+| Route facts | The selected card lays out the backend's `facts` as stats: places likely open, share on main roads, longest stretch with nothing open. That stretch is drawn as a dark dotted line, and the open places are pinned along the route |
+| Isolated stretches, help, CCTV, signals | The route's `longest_isolated` (purple dashes), `farthest_help` (red line to the nearest place likely open), `cameras` (grey dots) and, on a vehicle, `signals` (amber markers). Reported beside the score, not part of it |
+| Time to leave | `departure_options` for the selected route: tap a time to re-run the trip then. `departure_note` says what it would change |
+| Shareable view | The URL holds the view, Google-style: `#@28.63150,77.21670,16z` |
+
+MapLibre's web worker is bundled explicitly (`?worker&url` in
+`MapView.jsx`); without that the production build ships without it and the
+map renders blank.
 
 The backend is finished and running. Start at
 **[`docs/FRONTEND_GUIDE.md`](../docs/FRONTEND_GUIDE.md)** — it documents the

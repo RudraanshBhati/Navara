@@ -6,6 +6,10 @@
 Counts amenities that imply people are around, per grid cell, then normalises.
 Not inverted: more POIs -> higher crowd proxy -> safer.
 
+This builds a POI-only crowd layer. scripts/build_cds.py builds the fuller one,
+combining these POIs with population and transit timetables; it reuses this
+script's cache and weights.
+
 Read app/data/cds.py before trusting the output. This is the weakest layer in
 the model and it is weighted lowest (0.10) for reasons that are worth
 understanding rather than working around.
@@ -109,15 +113,9 @@ def fetch_pois(cache: Path, refresh: bool) -> list[dict]:
     return payload["elements"]
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
-    p.add_argument("--refresh", action="store_true", help="Re-query Overpass, ignoring the cache")
-    args = p.parse_args()
-
-    elements = fetch_pois(args.cache, args.refresh)
+def poi_scores(elements: list[dict]) -> tuple[dict[str, float], int]:
+    """Weighted POI count per cell, and how many POIs landed in the grid."""
     grid = get_grid()
-
     raw: dict[str, float] = {}
     counted = 0
 
@@ -136,6 +134,19 @@ def main() -> int:
 
         raw[cell_id] = raw.get(cell_id, 0.0) + weight
         counted += 1
+
+    return raw, counted
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
+    p.add_argument("--refresh", action="store_true", help="Re-query Overpass, ignoring the cache")
+    args = p.parse_args()
+
+    elements = fetch_pois(args.cache, args.refresh)
+    grid = get_grid()
+    raw, counted = poi_scores(elements)
 
     if not raw:
         print("No POIs fell inside the grid — check the bbox.")

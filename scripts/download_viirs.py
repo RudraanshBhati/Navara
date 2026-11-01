@@ -1,19 +1,23 @@
-"""Download VIIRS VNP46A2 night-lights granules covering Delhi.
+"""Download VIIRS Black Marble night-lights granules covering Delhi.
 
-    python scripts/download_viirs.py                # 10 most recent nights
-    python scripts/download_viirs.py --nights 20
+    python scripts/download_viirs.py                          # 12 most recent months
+    python scripts/download_viirs.py --product VNP46A2 --count 20   # 20 recent nights
 
 Needs EARTHDATA_TOKEN in backend/.env — free and instant from
 https://urs.earthdata.nasa.gov/ (profile -> Generate Token).
 
-WHY MORE THAN ONE NIGHT
------------------------
-A single night's raster carries cloud shadow and moonlight variation. Those
-show up as dark patches that are indistinguishable from an unlit street, and a
-fake dark patch here becomes a "poorly lit stretch" warning on a route someone
-is deciding whether to walk at 11pm. `ingest_viirs.py` takes the per-cell median
-across every granule you pass it, which is what makes that transient rather than
-permanent. Ten nights is a reasonable floor.
+MONTHLY COMPOSITES BY DEFAULT
+-----------------------------
+VNP46A3 is NASA's own monthly composite of the nightly product, with a
+per-pixel quality flag saying whether more than three clear nights went into
+it or whether the value was gap-filled from history. A year of those, with the
+flagged pixels dropped, is a better lighting surface than any run of nightly
+granules: a dozen consecutive nights can fall entirely inside the monsoon,
+where most of what you get is interpolation over cloud. ~110-150 MB a month.
+
+VNP46A2 (nightly) remains available. If you use it, take many nights:
+`ingest_viirs.py` takes the per-cell median across every granule, which is what
+stops one night's cloud shadow becoming a permanent "poorly lit stretch".
 
 WHICH TILE
 ----------
@@ -37,17 +41,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 from app.config import DELHI_BBOX, RAW_DIR, get_settings  # noqa: E402
 
 CMR_URL = "https://cmr.earthdata.nasa.gov/search/granules.json"
-SHORT_NAME = "VNP46A2"
+PRODUCTS = ("VNP46A3", "VNP46A2")
 
 MIN_LON, MIN_LAT, MAX_LON, MAX_LAT = DELHI_BBOX
 
 
-def find_granules(nights: int) -> list[tuple[str, str]]:
+def find_granules(product: str, count: int) -> list[tuple[str, str]]:
     """(filename, url) for the most recent granules covering Delhi."""
     params = {
-        "short_name": SHORT_NAME,
+        "short_name": product,
         "bounding_box": f"{MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT}",
-        "page_size": str(nights),
+        "page_size": str(count),
         "sort_key": "-start_date",
     }
     r = httpx.get(CMR_URL, params=params, timeout=60.0)
@@ -94,9 +98,17 @@ def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--nights", type=int, default=10, help="How many recent nights (default: 10)")
+    p.add_argument("--product", choices=PRODUCTS, default="VNP46A3", help="Monthly (default) or nightly")
+    p.add_argument(
+        "--count",
+        "--nights",
+        type=int,
+        default=12,
+        help="How many recent granules: months for VNP46A3, nights for VNP46A2 (default: 12)",
+    )
     p.add_argument("--out", type=Path, default=RAW_DIR, help="Where to write granules")
     args = p.parse_args()
+    product = args.product
 
     token = get_settings().earthdata_token.strip()
     if not token:
@@ -104,8 +116,8 @@ def main() -> int:
         print("Free and instant: https://urs.earthdata.nasa.gov/ -> Generate Token")
         return 1
 
-    print(f"Searching CMR for {SHORT_NAME} over Delhi ({MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT})")
-    granules = find_granules(args.nights)
+    print(f"Searching CMR for {product} over Delhi ({MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT})")
+    granules = find_granules(product, args.count)
     if not granules:
         print("No granules found. Check the bbox and that CMR is reachable.")
         return 1
@@ -128,11 +140,11 @@ def main() -> int:
         except httpx.HTTPError as exc:
             print(f"  FAILED {name}: {exc}")
 
-    have = sorted(args.out.glob(f"{SHORT_NAME}*.h5"))
-    print(f"\n{fetched} downloaded, {len(have)} granules on disk in {args.out}")
+    have = sorted(args.out.glob(f"{product}*.h5"))
+    print(f"\n{fetched} downloaded, {len(have)} {product} granules on disk in {args.out}")
     if have:
         print("\nNext:")
-        print(f"  python scripts/ingest_viirs.py {args.out}/{SHORT_NAME}*.h5")
+        print(f"  python scripts/ingest_viirs.py {args.out}/{product}*.h5")
     return 0
 
 

@@ -39,6 +39,15 @@ class RoutesError(RuntimeError):
     pass
 
 
+#: Our travel modes -> Google Routes API travelMode. TWO_WHEELER is a real
+#: Routes API mode for India: it uses lanes and shortcuts a car cannot.
+GOOGLE_MODES = {"walk": "WALK", "two_wheeler": "TWO_WHEELER", "drive": "DRIVE"}
+
+#: Mock speeds in m/s, for plausible durations offline. Delhi city averages,
+#: not free-flow: traffic puts a car and a two-wheeler closer than you'd think.
+MOCK_SPEEDS = {"walk": 1.35, "two_wheeler": 6.5, "drive": 5.5}
+
+
 class GoogleRoutesClient:
     provider = "google"
 
@@ -46,7 +55,7 @@ class GoogleRoutesClient:
         self,
         origin: tuple[float, float],
         destination: tuple[float, float],
-        travel_mode: str = "WALK",
+        travel_mode: str = "walk",
     ) -> list[RouteCandidate]:
         settings = get_settings()
         if not settings.google_maps_api_key:
@@ -57,7 +66,7 @@ class GoogleRoutesClient:
             "destination": {
                 "location": {"latLng": {"latitude": destination[0], "longitude": destination[1]}}
             },
-            "travelMode": travel_mode,
+            "travelMode": GOOGLE_MODES.get(travel_mode, travel_mode),
             "computeAlternativeRoutes": True,
             "languageCode": "en-IN",
             "units": "METRIC",
@@ -117,8 +126,9 @@ class MockRoutesClient:
         self,
         origin: tuple[float, float],
         destination: tuple[float, float],
-        travel_mode: str = "WALK",  # noqa: ARG002
+        travel_mode: str = "walk",
     ) -> list[RouteCandidate]:
+        speed = MOCK_SPEEDS.get(travel_mode, MOCK_SPEEDS["walk"])
         out: list[RouteCandidate] = []
         for i, (bow, label) in enumerate(
             [(0.0, "Direct"), (0.35, "Northern detour"), (-0.35, "Southern detour")]
@@ -129,7 +139,7 @@ class MockRoutesClient:
                 RouteCandidate(
                     points=points,
                     distance_m=distance,
-                    duration_s=distance / 1.35,  # ~4.9 km/h walking
+                    duration_s=distance / speed,
                     polyline=encode_polyline(points),
                     label=label,
                 )

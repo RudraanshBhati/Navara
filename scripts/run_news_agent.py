@@ -13,10 +13,15 @@ Run this on a schedule once the pipeline is real. Every few hours is plenty:
 the halflife is a week, so the layer does not change fast, and each run costs
 one LLM call per article that clears the prefilter.
 
-Two things are written, with different retention:
+Four things are written, with different retention:
 
   nsi_incidents.json   the live 30-day window the NSI layer scores from
   nsi_archive.jsonl    every incident ever seen, permanently
+  news_reviewed.jsonl  every article the extractor read and what it decided,
+                       including the ones that did not become incidents
+  agent_runs.jsonl     one line per run, so a missed run is visible
+
+To run it every 6 hours on Windows: scripts/schedule_news_agent.ps1
 
 The second is the slow game. Delhi has no public incident-level crime dataset
 with coordinates and timestamps, so the archive accumulates one into being —
@@ -35,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
-from app.agent.archive import ARCHIVE_PATH, archive_stats  # noqa: E402
+from app.agent.archive import ARCHIVE_PATH, REVIEW_LOG_PATH, archive_stats, load_runs  # noqa: E402
 from app.agent.extract import verify_structured_output  # noqa: E402
 from app.agent.graph import run_agent  # noqa: E402
 from app.agent.sources import Article, NewsSource  # noqa: E402
@@ -106,6 +111,17 @@ def main() -> int:
             print("run anyway and see the per-article failures.")
             return 1
 
+    # RSS only reaches back a day or two, so a long gap since the last run is
+    # incidents nobody will ever see. Say so before running, while a longer
+    # --lookback can still recover what GDELT has indexed.
+    runs = load_runs()
+    if runs and not args.offline:
+        last = datetime.fromisoformat(runs[-1]["run_at"])
+        gap_h = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+        if gap_h > 24:
+            print(f"\nLast run was {gap_h / 24:.1f} days ago. RSS will not reach back that far;")
+            print(f"GDELT may: --lookback {min(int(gap_h) + 6, 2160)}\n")
+
     sources = [FixtureSource()] if args.offline else None
     state = run_agent(lookback_hours=args.lookback, dry_run=args.dry_run, sources=sources)
 
@@ -141,6 +157,7 @@ def main() -> int:
             )
             print(f"         {ARCHIVE_PATH}")
             print("         python scripts/export_archive.py --stats")
+        print(f"\nevery article read, incident or not: {REVIEW_LOG_PATH}")
 
     # A run that fetched nothing at all almost always means a source broke, not
     # that Delhi had a quiet day. Fail loudly so a cron job surfaces it.

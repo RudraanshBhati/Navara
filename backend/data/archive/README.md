@@ -16,6 +16,17 @@ An append-only JSON Lines log — one incident per line, written by
 take the last record for each `id`, so an incident re-extracted with better data
 appears more than once and the newest wins.
 
+Two logs sit beside it, under the same rules (append-only, back them up):
+
+- `news_reviewed.jsonl` — one row per article the extractor read, with its
+  verdict (`incident`, `not_incident`, `location_too_coarse`, `geocode_miss`,
+  `extract_failed`) and the text it read. The incident archive only holds
+  survivors, so this is what lets a better model re-examine the near misses.
+  Incidents outside the Delhi grid (Gurugram, Noida…) are marked
+  `in_grid: false`: archived, but not yet scoring.
+- `agent_runs.jsonl` — one line per run with its stage counts and errors. The
+  archive cannot tell a quiet week from a week the agent did not run; this can.
+
 ## Why it exists
 
 The NSI layer is a 30-day decaying window, which is correct for what NSI does:

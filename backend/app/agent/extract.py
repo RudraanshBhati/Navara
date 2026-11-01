@@ -64,6 +64,15 @@ COARSE_LOCATIONS = {
     "shahdara",
     "delhi police",
     "india",
+    # NCR cities and states: a whole city is as coarse as a Delhi district.
+    "gurugram",
+    "gurgaon",
+    "noida",
+    "greater noida",
+    "ghaziabad",
+    "faridabad",
+    "haryana",
+    "uttar pradesh",
 }
 
 
@@ -88,7 +97,8 @@ class ExtractedIncident(BaseModel):
     is_safety_incident: bool = Field(
         description=(
             "True only if this article reports a specific criminal or safety "
-            "incident that happened at an identifiable location in Delhi NCT, "
+            "incident that happened at an identifiable location in Delhi NCR "
+            "(Delhi, Gurugram, Noida, Greater Noida, Ghaziabad or Faridabad), "
             "and that would matter to someone deciding whether to walk there. "
             "False for policy news, court proceedings about old cases, traffic "
             "accidents, national news, and crime statistics reporting."
@@ -117,10 +127,11 @@ class ExtractedIncident(BaseModel):
     location_text: str = Field(
         description=(
             "The most specific place named in the article, as a geocodable "
-            "string, e.g. 'Saket Metro Station, New Delhi' or 'Karol Bagh "
-            "market, Delhi'. Return an empty string if the article names "
-            "nothing more specific than a district — 'Delhi', 'South Delhi', "
-            "'NCR' and the like are all too coarse to place on a 500 m grid. "
+            "string including its city, e.g. 'Saket Metro Station, New Delhi' "
+            "or 'Sector 29 market, Gurugram'. Return an empty string if the "
+            "article names nothing more specific than a district or city — "
+            "'Delhi', 'South Delhi', 'Noida', 'NCR' and the like are all too "
+            "coarse to place on a 500 m grid. "
             "Answer this field explicitly either way."
         ),
     )
@@ -153,8 +164,9 @@ class ExtractedIncident(BaseModel):
     )
 
 
-SYSTEM_PROMPT = """You extract pedestrian-safety incidents from Delhi news articles \
-for a routing system that recommends safer walking routes.
+SYSTEM_PROMPT = """You extract pedestrian-safety incidents from Delhi NCR news \
+articles (Delhi, Gurugram, Noida, Greater Noida, Ghaziabad, Faridabad) for a \
+routing system that recommends safer walking routes.
 
 The system uses your output to penalise specific 500-metre map cells. A wrong \
 location makes the map wrong for real people walking at night, so precision \
@@ -163,8 +175,8 @@ matters more than recall:
 - If the article does not name a place you could point to on a map, leave \
 location_text empty. Do not infer a location from the newspaper's city desk.
 - A location must be specific enough to mean one place. A named street, \
-market, metro station, colony or block is specific enough. A district or a \
-whole zone — "South Delhi", "West Delhi", "Outer Delhi", "NCR" — is not: \
+market, metro station, colony, sector or block is specific enough. A district, \
+a whole city or a zone — "South Delhi", "Outer Delhi", "Noida", "NCR" — is not: \
 spreading a penalty across a district is the same as no penalty, but it looks \
 like information. Leave location_text empty rather than naming one.
 - If you are not sure the event is recent, lower your confidence rather than \

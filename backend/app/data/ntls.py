@@ -13,8 +13,10 @@ for carrying more than an equal share.
 Caveat worth remembering when reading explanations: VIIRS measures light
 *leaving* the ground, which includes commercial signage and headlights, not just
 street lighting. A bright cell is not necessarily a well-lit footpath. OSM
-``lit=yes/no`` way tags are the intended secondary signal to disambiguate this;
-they are not yet ingested.
+``lit=yes/no`` way tags were the intended secondary signal, but only 857 of
+222,104 walkable street segments in the Delhi bbox carry one (counted October
+2026) — 0.4%, too sparse to use. Safetipin's audited lighting score is the
+realistic street-level source; see docs/DATA_SOURCES.md.
 """
 
 from __future__ import annotations
