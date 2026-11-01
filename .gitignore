@@ -33,9 +33,20 @@ pnpm-debug.log*
 backend/data/raw/*
 !backend/data/raw/.gitkeep
 !backend/data/raw/README.md
-# Processed grid artefacts are build outputs.
+# Read by the running app, though it lives with the raw inputs.
+!backend/data/raw/population_cells.json
+# Build outputs, except the ones the running app reads: about 15 MB, against
+# scripts that take minutes and depend on often-overloaded map servers. Allowed
+# by name so backups and caches stay out. See backend/data/README.md.
 backend/data/processed/*
 !backend/data/processed/.gitkeep
+!backend/data/processed/grid.json
+!backend/data/processed/map_pois.json
+!backend/data/processed/roads_major.json
+!backend/data/processed/cameras.json
+!backend/data/processed/signals.json
+!backend/data/processed/ntls.json
+!backend/data/processed/cds.json
 # The news archive is NOT a build output — it accumulates one day at a time and
 # cannot be regenerated once lost, because the source articles rotate off the
 # feeds. Kept out of git because it grows without bound and carries article

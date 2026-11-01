@@ -11,7 +11,8 @@ npm install
 npm run dev        # http://localhost:5173, expects the backend on :8000
 ```
 
-Places on the map come from OpenStreetMap; build them once on the backend:
+Places, roads, cameras and signals come from OpenStreetMap. They are committed,
+so this works from a fresh clone. Re-run these only to refresh them:
 
 ```bash
 cd backend
